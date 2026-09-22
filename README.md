@@ -88,27 +88,16 @@ Every adapter runs on credentials or file exports **you provide for your own
 account**. No scraping, no shared credentials, no working around any platform's
 terms of service.
 
-That is the ethical line, and it is also the only version that survives a legal
-review.
+### ServiceTitan works differently
 
-### ServiceTitan works differently, and you should know why
+For ServiceTitan this toolkit does not connect to anything. **You** run an
+extraction against **your own tenant** with credentials **you** obtained, and
+this repo imports the snapshot you produced. We never hold your credentials and
+never call their API.
 
-ServiceTitan's API Terms of Use bar developing or distributing an application
-whose primary purpose is migrating customers off their platform (clause 3.4.21),
-and separately cap caching of API content at 24 hours (clause 5.2). A migration
-is by definition a copy that outlives 24 hours, so a registered ServiceTitan
-migration app cannot exist.
-
-So for ServiceTitan this toolkit does not connect to anything. **You** run an
-extraction against **your own tenant**, under **your own subscription
-agreement**, with credentials **you** obtained. This repo gives you the script
-and the documentation to do that, and then imports the snapshot you produced.
-We never hold your ServiceTitan credentials and never call their API.
-
-We are not lawyers and this is not advice. If you are on ServiceTitan and
-planning to leave, read your own agreement, and note that the terms also carry a
-twelve month post-termination non-solicit and a non-disparagement clause binding
-API licensees.
+Practically that means the ServiceTitan path is a documented, self run script
+plus a generic snapshot importer, rather than an adapter in the sense the
+others are.
 
 ## Contributing
 
