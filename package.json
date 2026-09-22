@@ -1,0 +1,31 @@
+{
+  "name": "@opentradesos/migrate",
+  "version": "0.0.0",
+  "description": "Get your data out of Jobber, ServiceTitan, Housecall Pro, Workiz, ServiceM8 and FieldEdge. Extract, profile, map, dry run, load, reconcile.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": { "opentradesos-migrate": "./dist/cli/index.js" },
+  "exports": { ".": "./src/index.ts" },
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsup src/cli/index.ts src/index.ts --format esm --dts",
+    "dev": "tsx src/cli/index.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "zod": "^3.24.1",
+    "undici": "^7.2.0",
+    "p-limit": "^6.2.0",
+    "csv-parse": "^5.6.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

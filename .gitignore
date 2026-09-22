@@ -1,0 +1,7 @@
+node_modules/
+dist/
+snapshot/
+mapping.json
+*.tsbuildinfo
+.env
+.DS_Store
