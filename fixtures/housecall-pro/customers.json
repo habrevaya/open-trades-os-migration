@@ -1,0 +1,91 @@
+[
+  {
+    "id": "cus_8f21",
+    "first_name": "Dana",
+    "last_name": "Whitfield",
+    "company": null,
+    "email": "dana.w@example.com",
+    "mobile_number": "5125550192",
+    "home_number": "5125550148",
+    "lead_source": "Google",
+    "tax_exempt": false,
+    "notes": "Prefers morning appointments",
+    "tags": [
+      {
+        "name": "maintenance plan"
+      }
+    ],
+    "addresses": [
+      {
+        "id": "adr_1",
+        "type": "billing",
+        "street": "4102 Ramsey Ave",
+        "street_line_2": null,
+        "city": "Austin",
+        "state": "TX",
+        "zip": "78756",
+        "country": "US"
+      },
+      {
+        "id": "adr_2",
+        "type": "service",
+        "nickname": "Rental",
+        "street": "1900 Bluebonnet Ln",
+        "city": "Austin",
+        "state": "TX",
+        "zip": "78704",
+        "country": "US"
+      }
+    ]
+  },
+  {
+    "id": "cus_8f22",
+    "first_name": "Marcus",
+    "last_name": "Bell",
+    "company": "Brazos Property Group",
+    "email": "ap@brazospg.example.com",
+    "tax_exempt": true,
+    "addresses": [
+      {
+        "type": "billing",
+        "street": "900 Congress Ave",
+        "street_line_2": "Suite 400",
+        "city": "Austin",
+        "state": "TX",
+        "zip": "78701"
+      },
+      {
+        "type": "service",
+        "street": "900  Congress Ave",
+        "street_line_2": "Suite 400",
+        "city": "austin",
+        "state": "TX",
+        "zip": "78701",
+        "nickname": "Suite 400"
+      },
+      {
+        "type": "service",
+        "nickname": "North warehouse",
+        "street": "11200 Metric Blvd",
+        "city": "Austin",
+        "state": "TX",
+        "zip": "78758"
+      }
+    ]
+  },
+  {
+    "id": "cus_8f23",
+    "first_name": "Unreachable",
+    "last_name": "Account",
+    "addresses": [
+      {
+        "id": "adr_9",
+        "type": "service",
+        "street": "",
+        "city": "",
+        "state": "TX",
+        "zip": ""
+      }
+    ]
+  }
+]

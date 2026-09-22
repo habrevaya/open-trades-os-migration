@@ -12,6 +12,17 @@ import type { EntityName } from "../canonical/index.js";
 export interface ExtractContext {
   /** Where the raw snapshot is written. Resumable: check before you fetch. */
   snapshotDir: string;
+  /**
+   * Write raw records to the snapshot. Append-only, so a killed run leaves a
+   * readable file rather than a truncated one.
+   *
+   * This is on the context rather than being a return value from `extract`
+   * because an adapter that accumulated its results and handed them back would
+   * hold an entire company's history in memory before a single byte reached
+   * disk, and the shops with the most to migrate are exactly the ones where
+   * that fails.
+   */
+  append(entity: EntityName, records: readonly unknown[]): Promise<void>;
   /** Called after each page so a killed run resumes instead of restarting. */
   checkpoint(entity: EntityName, cursor: string): Promise<void>;
   resume(entity: EntityName): Promise<string | undefined>;
@@ -31,6 +42,20 @@ export interface SourceCapabilities {
    * migration defects. See docs/recurring-schedules.md.
    */
   recurrenceModel: "rule" | "materialized-series" | "anchored-to-completion" | "manual-list" | "none";
+  /**
+   * Canonical entities this source does not store as their own records, and
+   * the raw entity each is read out of instead.
+   *
+   * Some sources embed one thing inside another: addresses on the customer,
+   * line items on the job. Declaring it here is what lets the transform stage
+   * stay a general pipeline instead of growing a branch per source, which is
+   * the exact coupling the adapter contract exists to prevent.
+   *
+   * Example: `{ property: "customer" }` means "read the customer file to
+   * produce properties".
+   */
+  derivedFrom?: Partial<Record<EntityName, EntityName>>;
+
   /** Documented limits worth warning the operator about before they start. */
   knownLimits: string[];
 }

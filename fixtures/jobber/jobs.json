@@ -1,0 +1,51 @@
+[
+  {
+    "id": "Z2lkOi8vSm9iYmVyL0pvYi8xMDE=",
+    "jobNumber": 1042,
+    "title": "Semiannual HVAC maintenance",
+    "instructions": "Gate code #4417. Filters in the garage.",
+    "jobStatus": "active",
+    "jobType": "RECURRING",
+    "source": "Referral",
+    "createdAt": "2023-01-04T16:00:00Z",
+    "completedAt": null,
+    "client": { "id": "Z2lkOi8vSm9iYmVyL0NsaWVudC8x" },
+    "property": { "id": "Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzEx" },
+    "total": 318.0,
+    "visits": {
+      "pageInfo": { "hasNextPage": false, "endCursor": null },
+      "totalCount": 3,
+      "nodes": [
+        {
+          "id": "v-3", "startAt": "2024-09-18T14:00:00Z", "endAt": "2024-09-18T16:00:00Z",
+          "completedAt": null, "visitStatus": "UPCOMING", "instructions": null,
+          "assignedUsers": { "nodes": [{ "id": "u-1", "name": { "full": "Ray Ortiz" } }] }
+        },
+        {
+          "id": "v-1", "startAt": "2023-03-14T14:00:00Z", "endAt": "2023-03-14T16:00:00Z",
+          "completedAt": "2023-03-14T15:41:00Z", "visitStatus": "COMPLETE", "instructions": null,
+          "assignedUsers": { "nodes": [{ "id": "u-1", "name": { "full": "Ray Ortiz" } }] }
+        },
+        {
+          "id": "v-2", "startAt": "2023-09-20T14:00:00Z", "endAt": "2023-09-20T16:00:00Z",
+          "completedAt": "2023-09-20T15:12:00Z", "visitStatus": "COMPLETE", "instructions": "Replaced capacitor",
+          "assignedUsers": { "nodes": [{ "id": "u-2", "name": { "full": "Nia Osei" } }] }
+        }
+      ]
+    },
+    "customFields": [{ "label": "Equipment", "valueText": "Trane XR14" }]
+  },
+  {
+    "id": "Z2lkOi8vSm9iYmVyL0pvYi8xMDI=",
+    "jobNumber": 1043,
+    "title": "Water heater replacement",
+    "jobStatus": "archived",
+    "jobType": "ONE_OFF",
+    "client": { "id": "Z2lkOi8vSm9iYmVyL0NsaWVudC85OTk=" },
+    "property": { "id": "Z2lkOi8vSm9iYmVyL1Byb3BlcnR5Lzk5OQ==" },
+    "total": 2480.5,
+    "completedAt": "2022-11-02T21:15:00Z",
+    "visits": { "pageInfo": { "hasNextPage": false }, "nodes": [] },
+    "customFields": []
+  }
+]

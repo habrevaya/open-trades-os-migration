@@ -1,0 +1,18 @@
+[
+  {
+    "id": "Z2lkOi8vSm9iYmVyL1BheW1lbnQvOTAx",
+    "amount": 2600.5,
+    "paymentType": "CREDIT_CARD",
+    "entryDate": "2022-11-04",
+    "client": { "id": "Z2lkOi8vSm9iYmVyL0NsaWVudC8y" },
+    "invoice": { "id": "Z2lkOi8vSm9iYmVyL0ludm9pY2UvNTAy" }
+  },
+  {
+    "id": "Z2lkOi8vSm9iYmVyL1BheW1lbnQvOTAy",
+    "amount": 500.0,
+    "paymentType": "CHECK",
+    "entryDate": "2024-02-01",
+    "client": { "id": "Z2lkOi8vSm9iYmVyL0NsaWVudC8x" },
+    "invoice": null
+  }
+]

@@ -1,0 +1,92 @@
+[
+  {
+    "id": "job_4410",
+    "invoice_number": 1042,
+    "description": "Semiannual HVAC maintenance",
+    "note": "Gate code #4417",
+    "work_status": "completed",
+    "customer": {
+      "id": "cus_8f21"
+    },
+    "address": {
+      "id": "adr_1",
+      "street": "4102 Ramsey Ave",
+      "city": "Austin",
+      "state": "TX",
+      "zip": "78756"
+    },
+    "schedule": {
+      "scheduled_start": "2024-03-14T14:00:00Z",
+      "scheduled_end": "2024-03-14T16:00:00Z",
+      "arrival_window": 120
+    },
+    "work_timestamps": {
+      "on_my_way_at": "2024-03-14T13:41:00Z",
+      "started_at": "2024-03-14T14:06:00Z",
+      "completed_at": "2024-03-14T15:41:00Z"
+    },
+    "assigned_employees": [
+      {
+        "id": "emp_7",
+        "first_name": "Ray"
+      }
+    ],
+    "total_amount": 34424,
+    "outstanding_balance": 0,
+    "lead_source": {
+      "name": "Referral"
+    },
+    "job_fields": {
+      "job_type": {
+        "name": "Maintenance"
+      }
+    }
+  },
+  {
+    "id": "job_4411",
+    "description": "Water heater replacement",
+    "work_status": "scheduled",
+    "customer": {
+      "id": "cus_8f22"
+    },
+    "address": {
+      "street": "900 Congress Ave",
+      "street_line_2": "Suite 400",
+      "city": "Austin",
+      "state": "TX",
+      "zip": "78701"
+    },
+    "schedule": {
+      "scheduled_start": "2025-01-08T15:00:00Z",
+      "scheduled_end": null,
+      "arrival_window": 60
+    },
+    "work_timestamps": {},
+    "assigned_employees": [],
+    "total_amount": 248050,
+    "outstanding_balance": 248050
+  },
+  {
+    "id": "job_4412",
+    "description": "Quarterly backflow test",
+    "work_status": "scheduled",
+    "customer": {
+      "id": "cus_8f22"
+    },
+    "address": {
+      "street": "11200 Metric Blvd",
+      "city": "Austin",
+      "state": "TX",
+      "zip": "78758"
+    },
+    "schedule": {
+      "scheduled_start": "2025-02-03T16:00:00Z",
+      "scheduled_end": "2025-02-03T17:00:00Z",
+      "arrival_window": 60
+    },
+    "work_timestamps": {},
+    "assigned_employees": [],
+    "total_amount": 18500,
+    "outstanding_balance": 18500
+  }
+]

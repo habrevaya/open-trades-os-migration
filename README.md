@@ -20,18 +20,73 @@ strategy.
 
 ## Status
 
-**Phase 0.** The canonical model and the adapter contract are defined. No
-adapter is written yet. `npx @opentradesos/migrate extract` will tell you so.
+**Phase 1.** Two adapters read, and three of the seven commands work. Nothing
+writes to a target yet, which means everything that runs today runs against
+your account without changing anything in it.
 
 | Source | Route | Status |
 |---|---|---|
-| Jobber | GraphQL, OAuth | Planned, first |
-| Housecall Pro | REST, OAuth or API key | Planned |
+| Jobber | GraphQL, OAuth | **Reads.** Clients, properties, quotes, jobs with visits, invoices, payments, products, users |
+| Housecall Pro | REST, OAuth or API key | **Reads.** Customers with derived properties, estimates, jobs, invoices, employees |
 | Workiz | REST, API key | Planned |
 | ServiceM8 | REST, OAuth | Planned |
-| ServiceTitan | REST v2, OAuth plus app key | Planned |
+| ServiceTitan | Self run export | Planned. See below |
 | FieldEdge | CSV export only | Planned |
 | Generic CSV | Mapped CSV | Planned |
+
+| Command | Status |
+|---|---|
+| `sources` | Works. Lists what each adapter reads and what it cannot |
+| `extract` | Works. Resumable, checkpointed, rate limit aware |
+| `profile` | Works. Counts, date spans, fill rates, money totals, findings |
+| `reconcile` | Works. Counts and four dollar totals against what the target reports |
+| `map` | Not written |
+| `dryrun` | Not written |
+| `load` | Not written |
+| `attachments` | Not written |
+
+The mapping logic is covered by 120 tests against fixtures, so it can be
+checked without a live account. What no test can tell you is whether a real
+Jobber tenant matches the fixtures, and the answer for some field will be no.
+That is what `profile` is for, and it is why `load` is last rather than first.
+
+## Try it without risking anything
+
+`extract` and `profile` never write to a target. They answer the question
+everybody actually has first, which is what is in there.
+
+```
+export JOBBER_TOKEN=...          # never a command line flag: shell history
+npx @opentradesos/migrate extract --source jobber --out ./snapshot
+npx @opentradesos/migrate profile --in ./snapshot
+```
+
+The profile is the point. A real one looks like this:
+
+```
+RECORDS
+  customer             9412  2009-06-02 to 2026-09-18
+  job                 41022
+  invoice             38110
+
+MONEY
+  invoiced              $4,120,611.80
+  open balance             $41,206.18
+  unapplied                 $3,900.00
+
+FINDINGS
+  [error] job.orphan_property
+    38 job(s) name a property that is not in the snapshot.
+  [warning] customer.no_contact
+    1180 customer(s) have neither an email nor a phone number.
+  [info] payment.unallocated
+    14 payment(s) are not applied to any invoice. These are deposits.
+```
+
+Every migration conversation starts with "about eight thousand customers,
+going back maybe twelve years". This is where that becomes a number, and
+where the 1,180 customers you cannot email turn up before the cutover rather
+than after it.
 
 ## How it works
 
@@ -63,8 +118,30 @@ Every canonical record carries `sourceSystem`, `sourceId` and `sourcePayload`.
 That makes the load idempotent, makes reconciliation possible, and means a
 botched run is re-runnable instead of a restore from backup.
 
+Money is never a JS number anywhere in this toolkit. Every amount is a decimal
+string, and every operation on one goes through `src/money`, which holds it as
+a scaled bigint. `0.1 + 0.2` is the reason reconciliation reports lie.
+
 See `src/canonical/index.ts` and `src/adapters/types.ts`. Both are short and
 worth reading before contributing.
+
+### What the two adapters taught us
+
+Writing the second adapter is what proved the contract, and the two differ in
+exactly the ways that matter:
+
+- **Jobber** sends money as float dollars. **Housecall Pro** sends integer
+  cents. One line that forgets which is a hundredfold error.
+- **Jobber** has real property records. **Housecall Pro** keeps addresses on
+  the customer, so the adapter splits one record into a customer plus N
+  properties and mints stable property ids. Those ids have to survive a
+  re-run, a renamed site and inconsistent spacing, or a re-import duplicates
+  every property a shop owns.
+- **Jobber** pages by cursor. **Housecall Pro** pages by number, so a record
+  created mid-run shifts every page after it. That cannot be prevented, so the
+  adapter detects the repeat and says how bad the drift was.
+
+None of that reached the loader. That is the contract working.
 
 ## The hard parts
 

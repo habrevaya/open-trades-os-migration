@@ -166,6 +166,8 @@ export const CanonicalAttachment = Provenance.extend({
 });
 
 export type CanonicalCustomer = z.infer<typeof CanonicalCustomer>;
+export type CanonicalVisit = z.infer<typeof CanonicalVisit>;
+export type CanonicalInvoiceLine = z.infer<typeof CanonicalInvoiceLine>;
 export type CanonicalProperty = z.infer<typeof CanonicalProperty>;
 export type CanonicalEquipment = z.infer<typeof CanonicalEquipment>;
 export type CanonicalJob = z.infer<typeof CanonicalJob>;

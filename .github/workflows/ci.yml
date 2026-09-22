@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        # No version here on purpose. It is declared once, in package.json's
+        # packageManager field, and declaring it in both places makes this
+        # action fail before a single step has run.
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+
+      - name: The CLI runs
+        # A toolkit whose tests pass and whose binary does not start is worse
+        # than useless, because the failure lands on the operator at 2am.
+        run: pnpm dev sources

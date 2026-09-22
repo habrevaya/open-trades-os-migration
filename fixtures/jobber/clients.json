@@ -1,0 +1,59 @@
+[
+  {
+    "id": "Z2lkOi8vSm9iYmVyL0NsaWVudC8x",
+    "isCompany": false,
+    "companyName": null,
+    "firstName": "Dana",
+    "lastName": "Whitfield",
+    "isArchived": false,
+    "emails": [
+      { "address": "dana.w@example.com", "primary": true, "description": "Main" },
+      { "address": "old-address@example.com", "primary": false, "description": "Old" }
+    ],
+    "phones": [
+      { "number": "512-555-0148", "primary": false, "description": "Home" },
+      { "number": "512-555-0192", "primary": true, "description": "Mobile" }
+    ],
+    "billingAddress": {
+      "street1": "4102 Ramsey Ave", "street2": null, "city": "Austin",
+      "province": "TX", "postalCode": "78756", "country": "US"
+    },
+    "tags": [{ "label": "maintenance plan" }, { "label": "VIP" }],
+    "customFields": [
+      { "label": "Gate code", "valueText": "#4417" },
+      { "label": "Dogs on property", "valueBoolean": true },
+      { "label": "Empty field", "valueText": "" }
+    ],
+    "createdAt": "2016-04-11T15:02:00Z"
+  },
+  {
+    "id": "Z2lkOi8vSm9iYmVyL0NsaWVudC8y",
+    "isCompany": true,
+    "companyName": "Brazos Property Group",
+    "firstName": "Marcus",
+    "lastName": "Bell",
+    "isArchived": false,
+    "emails": [{ "address": "ap@brazospg.example.com", "primary": true }],
+    "phones": [],
+    "billingAddress": {
+      "street1": "900 Congress Ave", "street2": "Suite 400", "city": "Austin",
+      "province": "TX", "postalCode": "78701", "country": "US"
+    },
+    "isTaxExempt": true,
+    "tags": [],
+    "customFields": [],
+    "createdAt": "2019-08-02T11:30:00Z"
+  },
+  {
+    "id": "Z2lkOi8vSm9iYmVyL0NsaWVudC8z",
+    "isCompany": false,
+    "companyName": null,
+    "firstName": null,
+    "lastName": null,
+    "emails": [],
+    "phones": [],
+    "billingAddress": { "street1": null, "city": null, "province": null, "postalCode": null },
+    "tags": [],
+    "customFields": []
+  }
+]
