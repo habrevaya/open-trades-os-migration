@@ -1,7 +1,17 @@
 node_modules/
 dist/
-snapshot/
-mapping.json
 *.tsbuildinfo
 .env
 .DS_Store
+
+# The default output directories, anchored to the repository root.
+#
+# `snapshot/` without the leading slash matches at ANY depth, so it also
+# excluded src/snapshot, which is the module that reads and writes one. The
+# repository pushed without it, every other file that imports it failed to
+# typecheck, and CI reported five missing-module errors rather than one
+# missing file. A pattern that quietly drops source is worth five characters
+# to anchor.
+/snapshot/
+/mapping.json
+/shots/
