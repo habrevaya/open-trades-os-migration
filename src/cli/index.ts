@@ -57,20 +57,35 @@ function credentialsFor(source: string, options: { from?: string; columns?: stri
     }
     return undefined;
   };
-  const token = source === "jobber"
-    ? pick("JOBBER_TOKEN", "JOBBER_ACCESS_TOKEN")
-    : pick("HOUSECALL_PRO_KEY", "HOUSECALL_PRO_TOKEN");
+  const names = TOKEN_ENV[source] ?? [];
+  const token = pick(...names);
 
   if (!token) {
-    const name = source === "jobber" ? "JOBBER_TOKEN" : "HOUSECALL_PRO_KEY";
     fail(
-      `No credential found. Set ${name} in your environment.\n\n` +
+      `No credential found. Set ${names[0] ?? "the source's token"} in your environment.\n\n` +
         `  Deliberately not a command line flag: a token passed as an argument\n` +
         `  is written to your shell history and visible in the process list.`,
     );
   }
-  return { token, key: token };
+  const extra: Record<string, string> = {};
+  for (const [key, name] of Object.entries(EXTRA_ENV[source] ?? {})) {
+    const value = pick(name);
+    if (value) extra[key] = value;
+  }
+  return { token, key: token, ...extra };
 }
+
+/** Where each API source's credential lives. The first name is the documented one. */
+const TOKEN_ENV: Record<string, string[]> = {
+  jobber: ["JOBBER_TOKEN", "JOBBER_ACCESS_TOKEN"],
+  "housecall-pro": ["HOUSECALL_PRO_KEY", "HOUSECALL_PRO_TOKEN"],
+  workiz: ["WORKIZ_TOKEN", "WORKIZ_API_TOKEN"],
+};
+
+/** Optional, non-secret settings an API source reads from the environment. */
+const EXTRA_ENV: Record<string, Record<string, string>> = {
+  workiz: { account: "WORKIZ_ACCOUNT", since: "WORKIZ_SINCE" },
+};
 
 /** The target's token. Same rule as the source's: the environment, never a flag. */
 function targetToken(): string {

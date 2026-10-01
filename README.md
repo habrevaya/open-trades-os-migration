@@ -29,7 +29,7 @@ against it to the cent or says exactly why not.
 | Jobber | GraphQL, OAuth | **Reads.** Clients, properties, quotes, jobs with visits, invoices, payments, products, users |
 | Housecall Pro | REST, OAuth or API key | **Reads.** Customers with derived properties, estimates, jobs, invoices, employees |
 | Generic CSV | Mapped CSV | **Reads.** Every entity, from any export, with a column mapping. See [docs/generic-csv.md](docs/generic-csv.md) |
-| Workiz | REST, API key | Planned |
+| Workiz | REST, API key | **Reads.** Jobs with team, customers and properties split out of them, invoices from job totals, team. No payments, lines or leads: the public API does not list them. See [docs/workiz.md](docs/workiz.md) |
 | ServiceM8 | REST, OAuth | Planned |
 | ServiceTitan | Self run export | Planned. See below |
 | FieldEdge | CSV export only | Use Generic CSV with a `columns.json` |

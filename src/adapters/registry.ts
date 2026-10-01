@@ -2,15 +2,16 @@ import type { SourceAdapter } from "./types.js";
 import { jobber } from "./jobber/index.js";
 import { housecallPro } from "./housecall-pro/index.js";
 import { csv } from "./csv/index.js";
+import { workiz } from "./workiz/index.js";
 
 /**
  * Every adapter that exists, by id. The CLI resolves `--source` through here
  * and nowhere else, so an unimplemented source produces one honest message
  * rather than a stack trace from somewhere inside the extraction.
  */
-export const adapters: SourceAdapter[] = [jobber, housecallPro, csv];
+export const adapters: SourceAdapter[] = [jobber, housecallPro, workiz, csv];
 
-export const PLANNED = ["workiz", "servicem8", "servicetitan", "fieldedge"] as const;
+export const PLANNED = ["servicem8", "servicetitan", "fieldedge"] as const;
 
 export function adapterFor(id: string): SourceAdapter {
   const found = adapters.find((a) => a.id === id);
