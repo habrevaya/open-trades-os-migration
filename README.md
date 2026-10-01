@@ -20,9 +20,9 @@ strategy.
 
 ## Status
 
-**Phase 2.** Four sources read (Jobber, Housecall Pro, Workiz, FieldEdge),
-any spreadsheet export reads through Generic CSV, a ServiceTitan snapshot you
-produce yourself imports, and all seven commands run: a snapshot lands in
+**Phase 2.** Five sources read (Jobber, Housecall Pro, Workiz, FieldEdge,
+ServiceTitan from its own report exports), any spreadsheet export, CSV or
+Excel, reads through Generic CSV, and all seven commands run: a snapshot lands in
 OpenTradesOS, through its public API, resumably, and reconciles against it to
 the cent or says exactly why not.
 
@@ -30,11 +30,11 @@ the cent or says exactly why not.
 |---|---|---|
 | Jobber | GraphQL, OAuth | **Reads.** Clients, properties, quotes, jobs with visits, invoices, payments, products, users |
 | Housecall Pro | REST, OAuth or API key | **Reads.** Customers with derived properties, estimates, jobs, invoices, employees |
-| Generic CSV | Mapped CSV | **Reads.** Every entity, equipment, contacts and recurring schedules included, from any export, with a column mapping. See [docs/generic-csv.md](docs/generic-csv.md) |
+| Generic CSV | Mapped CSV or Excel | **Reads.** Every entity, equipment, contacts and recurring schedules included, from any export, `.csv` or `.xlsx`, with a column mapping. See [docs/generic-csv.md](docs/generic-csv.md) |
 | Canonical snapshot | Files you produce | **Imports** records already in the canonical shape, for any source this toolkit does not connect to. See [docs/snapshot-format.md](docs/snapshot-format.md) |
 | Workiz | REST, API key | **Reads.** Jobs with team, customers and properties split out of them, invoices from job totals, team. No payments, lines or leads: the public API does not list them. See [docs/workiz.md](docs/workiz.md) |
-| ServiceM8 | Your own export | **Not read through its API.** Its platform policy does not allow the API to export data to a product that replicates ServiceM8 without permission. Your own CSV exports go through Generic CSV. See [docs/servicem8.md](docs/servicem8.md) |
-| ServiceTitan | Your own export | **Imports** the snapshot you produce from your own tenant, checked record by record against the canonical schema. Connects to nothing. See below and [docs/servicetitan.md](docs/servicetitan.md) |
+| ServiceM8 | CSV export only | **Reads your own CSV exports through Generic CSV.** That is the route: its platform policy does not allow the API to export data to a product that replicates ServiceM8 without permission, so the API is not used. See [docs/servicem8.md](docs/servicem8.md) |
+| ServiceTitan | Report exports (XLSX) | **Reads** eleven reports an owner exports from their own account (customers, locations, technicians, jobs, invoices with items and tax, applied payments, estimates, equipment, memberships, pricebook), joined on ServiceTitan's own ids, times in your time zone. Connects to nothing. No unapplied payments, appointments beyond the first, or membership visits. A canonical snapshot you produced still imports with `--format canonical`. See [docs/servicetitan.md](docs/servicetitan.md) |
 | FieldEdge | CSV export only | **Reads** FieldEdge's own five exports (customers, dispatches, invoices, quotes, equipment) with their columns built in. No payments or lines: not exported. See [docs/fieldedge.md](docs/fieldedge.md) |
 
 | Command | Status |
@@ -65,7 +65,7 @@ Loading history needs a token an owner has given `data:import`, and the
 needs, before it writes anything. See
 [docs/loading.md](docs/loading.md).
 
-The mapping and loading logic is covered by 267 tests against fixtures and
+The mapping and loading logic is covered by 288 tests against fixtures and
 a fake OpenTradesOS served over real HTTP, including a load killed after each
 of its writes in turn and resumed, and a lost ledger rebuilt from the target. What no test can tell you is whether a
 real tenant matches the fixtures, and for some field the answer will be no.
@@ -233,16 +233,17 @@ Every adapter runs on credentials or file exports **you provide for your own
 account**. No scraping, no shared credentials, no working around any platform's
 terms of service.
 
-### ServiceTitan works differently
+### ServiceTitan and ServiceM8 move by export
 
-For ServiceTitan this toolkit does not connect to anything. **You** run an
-extraction against **your own tenant** with credentials **you** obtained, and
-this repo imports the snapshot you produced. We never hold your credentials and
-never call their API.
+For ServiceTitan this toolkit does not connect to anything. **You** export
+reports from **your own account**, in ServiceTitan's own screens, and this
+repo reads the files: Generic CSV with ServiceTitan's documented columns
+built in, as for FieldEdge. We never hold your credentials and never call
+their API. See [docs/servicetitan.md](docs/servicetitan.md), which says
+report by report what to tick and which headers ServiceTitan documents.
 
-Practically that means the ServiceTitan path is a documented snapshot format
-plus an importer that checks every record against it, rather than an adapter
-in the sense the others are. See [docs/servicetitan.md](docs/servicetitan.md).
+ServiceM8 is the same, by its own CSV exports. See
+[docs/servicem8.md](docs/servicem8.md).
 
 ## Contributing
 

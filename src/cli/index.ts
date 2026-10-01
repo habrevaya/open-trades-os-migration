@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import pc from "picocolors";
-import { readFile, writeFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { adapterFor, adapters, PLANNED, BLOCKED } from "../adapters/registry.js";
 import { Snapshot } from "../snapshot/index.js";
 import { transform, CountingSink } from "../transform/index.js";
@@ -41,12 +42,16 @@ const program = new Command()
  * list, where every other user on the machine can read it. This is somebody's
  * live business account.
  */
-function credentialsFor(source: string, options: { from?: string; columns?: string } = {}): Record<string, string> {
+function credentialsFor(source: string, options: { from?: string; columns?: string; timezone?: string } = {}): Record<string, string> {
   // A spreadsheet export is reached by its path, not a token, and a path is
   // not a secret, so it is the one credential that is a flag.
   if (FILE_SOURCES.includes(source)) {
     if (!options.from) fail(`The ${source} source reads a directory of exports. Pass --from <dir>.`);
-    return { dir: options.from, ...(options.columns ? { columns: options.columns } : {}) };
+    return {
+      dir: options.from,
+      ...(options.columns ? { columns: options.columns } : {}),
+      ...(options.timezone ? { timezone: options.timezone } : {}),
+    };
   }
 
   const env = process.env;
@@ -76,7 +81,26 @@ function credentialsFor(source: string, options: { from?: string; columns?: stri
 }
 
 /** Sources read from files the operator exported, reached by --from rather than a token. */
-const FILE_SOURCES = ["csv", "fieldedge", "servicetitan", "canonical"];
+const FILE_SOURCES = ["csv", "fieldedge", "servicetitan-csv", "servicetitan", "canonical"];
+
+/**
+ * `--source servicetitan` has two routes, and the folder says which it is
+ * unless --format does: a customer.ndjson is a canonical snapshot the owner
+ * produced (the older, advanced route, kept working exactly as it was);
+ * anything else is the owner's report exports, which is the default.
+ */
+async function servicetitanRoute(options: { from?: string; format?: string }): Promise<string> {
+  if (options.format === "canonical") return "servicetitan";
+  if (options.format === "reports") return "servicetitan-csv";
+  if (options.format) fail(`--format is reports or canonical, not ${JSON.stringify(options.format)}.`);
+  if (!options.from) return "servicetitan-csv";
+  try {
+    await access(join(options.from, "customer.ndjson"));
+    return "servicetitan";
+  } catch {
+    return "servicetitan-csv";
+  }
+}
 
 /** Where each API source's credential lives. The first name is the documented one. */
 const TOKEN_ENV: Record<string, string[]> = {
@@ -130,7 +154,7 @@ program
     }
     if (PLANNED.length > 0) console.log("");
     for (const [id, reason] of Object.entries(BLOCKED)) {
-      console.log(`  ${pc.red("not read")} ${id}`);
+      console.log(`  ${pc.yellow("csv only")} ${id}`);
       console.log(`           ${pc.dim(wrap(reason, 11))}`);
       console.log("");
     }
@@ -143,8 +167,12 @@ program
   .option("-o, --out <dir>", "snapshot directory", "./snapshot")
   .option("--from <dir>", "file sources (csv, fieldedge, servicetitan, canonical): the directory holding the exported files")
   .option("--columns <file>", "file sources: column mapping, if not <from>/columns.json")
-  .action(async (options: { source: string; out: string; from?: string; columns?: string }) => {
-    const adapter = resolve(options.source);
+  .option("--timezone <zone>", "file sources: the IANA time zone the exports' times are in, e.g. America/Chicago")
+  .option("--format <format>", "servicetitan: reports (your report exports, the default) or canonical (a snapshot you produced)")
+  .action(async (options: { source: string; out: string; from?: string; columns?: string; timezone?: string; format?: string }) => {
+    const source = options.source === "servicetitan" ? await servicetitanRoute(options) : options.source;
+    if (options.format && options.source !== "servicetitan") fail("--format applies to --source servicetitan only.");
+    const adapter = resolve(source);
     const credentials = credentialsFor(adapter.id, options);
 
     const check = await adapter.verify(credentials);

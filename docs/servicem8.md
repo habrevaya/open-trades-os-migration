@@ -1,6 +1,9 @@
 # ServiceM8
 
-There is no ServiceM8 API adapter, and `--source servicem8` says why.
+ServiceM8 moves by CSV: your own exports, read through
+[Generic CSV](generic-csv.md) with `--source csv`. That is the route, not a
+stopgap until something better. There is no ServiceM8 API adapter, and
+`--source servicem8` says why.
 
 ServiceM8's [Platform Policy](https://developer.servicem8.com/page/platform-policy),
 which its API documentation asks every integration to follow, says the

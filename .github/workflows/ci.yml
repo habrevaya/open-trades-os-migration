@@ -42,9 +42,21 @@ jobs:
           pnpm dev map --in "$RUNNER_TEMP/snapshot"
           pnpm dev dryrun --in "$RUNNER_TEMP/snapshot"
 
+      - name: ServiceTitan report exports go all the way through
+        # The default ServiceTitan route: the owner's own XLSX report
+        # exports, read with the ServiceTitan preset, then profiled for
+        # joins left open and dry run into the in-memory tenant.
+        run: |
+          pnpm dev extract --source servicetitan --from fixtures/servicetitan-reports --timezone America/Chicago --out "$RUNNER_TEMP/servicetitan-reports"
+          pnpm dev profile --in "$RUNNER_TEMP/servicetitan-reports"
+          pnpm dev map --in "$RUNNER_TEMP/servicetitan-reports"
+          pnpm dev dryrun --in "$RUNNER_TEMP/servicetitan-reports"
+
       - name: A snapshot someone else produced goes all the way through
-        # The ServiceTitan route: canonical files in, every record checked
-        # against the schema, then the same loader as every other source.
+        # The advanced ServiceTitan route: canonical files in, every record
+        # checked against the schema, then the same loader as every other
+        # source. The folder's customer.ndjson selects it without --format.
         run: |
           pnpm dev extract --source servicetitan --from fixtures/servicetitan --out "$RUNNER_TEMP/servicetitan"
           pnpm dev dryrun --in "$RUNNER_TEMP/servicetitan"
+          pnpm dev extract --source servicetitan --format canonical --from fixtures/servicetitan --out "$RUNNER_TEMP/servicetitan-explicit"
