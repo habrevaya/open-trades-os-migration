@@ -41,3 +41,10 @@ jobs:
           pnpm dev extract --source csv --from fixtures/csv/mapped --out "$RUNNER_TEMP/snapshot"
           pnpm dev map --in "$RUNNER_TEMP/snapshot"
           pnpm dev dryrun --in "$RUNNER_TEMP/snapshot"
+
+      - name: A snapshot someone else produced goes all the way through
+        # The ServiceTitan route: canonical files in, every record checked
+        # against the schema, then the same loader as every other source.
+        run: |
+          pnpm dev extract --source servicetitan --from fixtures/servicetitan --out "$RUNNER_TEMP/servicetitan"
+          pnpm dev dryrun --in "$RUNNER_TEMP/servicetitan"

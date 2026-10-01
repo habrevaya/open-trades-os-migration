@@ -28,10 +28,11 @@ against it to the cent or says exactly why not.
 |---|---|---|
 | Jobber | GraphQL, OAuth | **Reads.** Clients, properties, quotes, jobs with visits, invoices, payments, products, users |
 | Housecall Pro | REST, OAuth or API key | **Reads.** Customers with derived properties, estimates, jobs, invoices, employees |
-| Generic CSV | Mapped CSV | **Reads.** Every entity, from any export, with a column mapping. See [docs/generic-csv.md](docs/generic-csv.md) |
+| Generic CSV | Mapped CSV | **Reads.** Every entity, equipment, contacts and recurring schedules included, from any export, with a column mapping. See [docs/generic-csv.md](docs/generic-csv.md) |
+| Canonical snapshot | Files you produce | **Imports** records already in the canonical shape, for any source this toolkit does not connect to. See [docs/snapshot-format.md](docs/snapshot-format.md) |
 | Workiz | REST, API key | **Reads.** Jobs with team, customers and properties split out of them, invoices from job totals, team. No payments, lines or leads: the public API does not list them. See [docs/workiz.md](docs/workiz.md) |
 | ServiceM8 | REST, OAuth | Planned |
-| ServiceTitan | Self run export | Planned. See below |
+| ServiceTitan | Your own export | **Imports** the snapshot you produce from your own tenant, checked record by record against the canonical schema. Connects to nothing. See below and [docs/servicetitan.md](docs/servicetitan.md) |
 | FieldEdge | CSV export only | **Reads** FieldEdge's own five exports (customers, dispatches, invoices, quotes, equipment) with their columns built in. No payments or lines: not exported. See [docs/fieldedge.md](docs/fieldedge.md) |
 
 | Command | Status |
@@ -223,9 +224,9 @@ extraction against **your own tenant** with credentials **you** obtained, and
 this repo imports the snapshot you produced. We never hold your credentials and
 never call their API.
 
-Practically that means the ServiceTitan path is a documented, self run script
-plus a generic snapshot importer, rather than an adapter in the sense the
-others are.
+Practically that means the ServiceTitan path is a documented snapshot format
+plus an importer that checks every record against it, rather than an adapter
+in the sense the others are. See [docs/servicetitan.md](docs/servicetitan.md).
 
 ## Contributing
 

@@ -74,9 +74,8 @@ export const capabilities: SourceCapabilities = {
   knownLimits: [
     "Reads files, not an account. What it imports is exactly what the export contained, so an export filtered to active customers produces a migration with no inactive ones.",
     "Child files (invoice lines, visits, payment allocations, estimate lines) are held in memory while their parent file streams. Fine for hundreds of thousands of rows; split a larger export by year.",
-    "A spreadsheet has no recurrence. Repeating work arrives as whatever rows were exported, and any schedule has to be rebuilt by a person.",
+    "A spreadsheet has no recurrence of its own. Repeating work arrives as whatever rows were exported, unless recurring_schedules.csv states each schedule, model included; nothing is inferred from repeating jobs.",
     "Dates written as 03/04/2024 are read month first unless columns.json says DMY. Anything that is neither ISO nor slashed is refused, not guessed.",
-    "Recurring schedules come only from recurring_schedules.csv, which says which recurrence model the source used. Nothing is inferred from repeating jobs.",
   ],
 };
 

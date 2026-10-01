@@ -52,6 +52,11 @@ export function derivations(adapter: SourceAdapter): { from: EntityName; to: Ent
     .map((entity) => ({ from: derived[entity] ?? entity, to: entity }));
 }
 
+/** The id a raw record goes by, for naming it in a report when it cannot be read. */
+export function rawId(raw: Record<string, unknown>): string {
+  return String(raw["id"] ?? raw["sourceId"] ?? raw["uuid"] ?? raw["UUID"] ?? "");
+}
+
 export interface TransformSink {
   write(entity: EntityName, canonical: Record<string, unknown>): Promise<void> | void;
 }
@@ -76,7 +81,7 @@ export async function transform(
         // land in the failure list ten thousand times.
         const message = (error as Error).message;
         if (message.includes("no canonical mapping")) break;
-        failures.push({ entity: to, sourceId: String(raw["id"] ?? ""), error: message });
+        failures.push({ entity: to, sourceId: rawId(raw), error: message });
         continue;
       }
 
@@ -116,7 +121,7 @@ export async function* canonicalRecords(
     } catch (error) {
       const message = (error as Error).message;
       if (message.includes("no canonical mapping")) return;
-      yield { failure: { entity, sourceId: String(raw["id"] ?? ""), error: message } };
+      yield { failure: { entity, sourceId: rawId(raw), error: message } };
       continue;
     }
     for (const canonical of Array.isArray(produced) ? produced : [produced]) {

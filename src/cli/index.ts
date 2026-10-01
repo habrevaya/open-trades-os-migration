@@ -2,7 +2,7 @@
 import { Command } from "commander";
 import pc from "picocolors";
 import { readFile, writeFile } from "node:fs/promises";
-import { adapterFor, adapters, PLANNED } from "../adapters/registry.js";
+import { adapterFor, adapters, PLANNED, BLOCKED } from "../adapters/registry.js";
 import { Snapshot } from "../snapshot/index.js";
 import { transform, CountingSink } from "../transform/index.js";
 import { renderProfile } from "../profile/index.js";
@@ -76,7 +76,7 @@ function credentialsFor(source: string, options: { from?: string; columns?: stri
 }
 
 /** Sources read from files the operator exported, reached by --from rather than a token. */
-const FILE_SOURCES = ["csv", "fieldedge"];
+const FILE_SOURCES = ["csv", "fieldedge", "servicetitan", "canonical"];
 
 /** Where each API source's credential lives. The first name is the documented one. */
 const TOKEN_ENV: Record<string, string[]> = {
@@ -127,14 +127,19 @@ program
       console.log(`  ${pc.yellow("planned")}  ${planned}`);
     }
     if (PLANNED.length > 0) console.log("");
+    for (const [id, reason] of Object.entries(BLOCKED)) {
+      console.log(`  ${pc.red("not read")} ${id}`);
+      console.log(`           ${pc.dim(wrap(reason, 11))}`);
+      console.log("");
+    }
   });
 
 program
   .command("extract")
   .description("Pull everything from the source into a local raw snapshot. Never writes to OpenTradesOS.")
-  .requiredOption("-s, --source <source>", "jobber | housecall-pro | csv | workiz | servicem8 | servicetitan | fieldedge")
+  .requiredOption("-s, --source <source>", "jobber | housecall-pro | workiz | fieldedge | servicetitan | csv | canonical")
   .option("-o, --out <dir>", "snapshot directory", "./snapshot")
-  .option("--from <dir>", "file sources (csv, fieldedge): the directory holding the exported files")
+  .option("--from <dir>", "file sources (csv, fieldedge, servicetitan, canonical): the directory holding the exported files")
   .option("--columns <file>", "file sources: column mapping, if not <from>/columns.json")
   .action(async (options: { source: string; out: string; from?: string; columns?: string }) => {
     const adapter = resolve(options.source);
