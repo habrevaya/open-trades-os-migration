@@ -11,6 +11,10 @@ import type { Snapshot } from "../snapshot/index.js";
 import { canonicalRecords } from "../transform/index.js";
 import { backoffDelay, defaultRetry, retryAfterMs, type RetryPolicy } from "../adapters/http.js";
 import { Ledger } from "../load/ledger.js";
+import { TargetError, type Target } from "../target/client.js";
+import { AttachableEntity } from "../target/contracts.js";
+import { sniff, MAX_ATTACHMENT_BYTES } from "../target/files.js";
+import { basename } from "node:path";
 
 /**
  * ATTACHMENTS
@@ -25,14 +29,15 @@ import { Ledger } from "../load/ledger.js";
  * record it belongs to. That index is the resume point: a file already in it
  * is not fetched again.
  *
- * It stops there, and says why. OpenTradesOS has no endpoint a third party
- * can use to upload a file and attach it to a record. The only upload path
- * is the field device queue, which accepts bytes a registered phone has
- * already announced; driving it from a migration would mean impersonating a
- * phone. So the files land locally, indexed against their target records,
- * ready to attach the day the API takes them (`attachments.upload` in
- * docs/target-api-gaps.md). Downloading now is still the right move: the
- * signed URLs and the source account may both be gone by then.
+ * Then, with a target, each file is attached to the record `load` made of
+ * its source record, through `POST /v1/attachments` (base64, with an
+ * Idempotency-Key per file, so a re-run attaches nothing twice and the target
+ * keeps the same bytes on the same record once anyway). What the target will
+ * not store is said before anything is sent: a file on equipment, which has
+ * no route, one over twenty megabytes, or one whose first bytes are not an
+ * image or a PDF (`attachments.unattachable` in docs/target-api-gaps.md).
+ * Downloading first is still the right move: the signed URLs and the source
+ * account may both be gone by the time the load is reconciled.
  */
 
 export interface AttachmentIndexEntry {
@@ -217,3 +222,94 @@ export async function fetchAttachments(snapshot: Snapshot, adapter: SourceAdapte
   return report;
 }
 
+
+export interface UploadReport {
+  uploaded: number;
+  already: number;
+  /** The record it belongs to is not in the target (not loaded, or blocked). */
+  notLoaded: { sourceId: string; reason: string }[];
+  /** What the target will not store, said before sending. */
+  unattachable: { sourceId: string; reason: string }[];
+  /** Refused by the target. */
+  failed: { sourceId: string; reason: string }[];
+  /** Set when the run stopped early. Re-running resumes. */
+  aborted?: string;
+}
+
+/** The file's own name: the downloaded copy carries the source id in front of it. */
+function fileNameOf(entry: AttachmentIndexEntry): string {
+  const name = basename(entry.path);
+  const prefix = `${safeSegment(entry.sourceId)}-`;
+  return (name.startsWith(prefix) ? name.slice(prefix.length) : name).slice(0, 255) || "file";
+}
+
+/** The target record an attachment belongs to, through the ledger `load` wrote. */
+function targetOf(entry: AttachmentIndexEntry, ledger: Ledger, visits: () => Map<string, string>): string | undefined {
+  if (entry.entityType === "visit") return visits().get(entry.entitySourceId);
+  return ledger.get(Ledger.key(entry.entityType, entry.entitySourceId));
+}
+
+/**
+ * Attach every downloaded file to its record in the target. Reads the index
+ * `fetchAttachments` wrote, so it never touches the source again.
+ */
+export async function uploadAttachments(dir: string, target: Target, ledger: Ledger, options: { onProgress?: (done: number) => void } = {}): Promise<UploadReport> {
+  const report: UploadReport = { uploaded: 0, already: 0, notLoaded: [], unattachable: [], failed: [] };
+  const index = await readIndex(dir);
+  let visitIndex: Map<string, string> | undefined;
+  // A visit's ledger key carries its job; built once, on the first visit asked for.
+  const visits = () => {
+    visitIndex ??= new Map([...ledger.all()]
+      .map((e) => [/#visit:(.+)$/.exec(e.key)?.[1], e.target] as const)
+      .filter((pair): pair is readonly [string, string] => pair[0] !== undefined)
+      .map(([k, v]) => [k, v]));
+    return visitIndex;
+  };
+
+  let done = 0;
+  for (const entry of index.values()) {
+    done += 1;
+    options.onProgress?.(done);
+    const key = Ledger.key("attachment", entry.sourceId);
+    if (ledger.has(key)) { report.already += 1; continue; }
+    const entityType = AttachableEntity.safeParse(entry.entityType);
+    if (!entityType.success) {
+      report.unattachable.push({ sourceId: entry.sourceId, reason: `the target attaches nothing to ${entry.entityType}` });
+      continue;
+    }
+    const entityId = targetOf(entry, ledger, visits);
+    if (!entityId) {
+      report.notLoaded.push({ sourceId: entry.sourceId, reason: `${entry.entityType} ${entry.entitySourceId} is not in the target` });
+      continue;
+    }
+    if (entry.bytes > MAX_ATTACHMENT_BYTES) {
+      report.unattachable.push({ sourceId: entry.sourceId, reason: `${(entry.bytes / 1_048_576).toFixed(1)} MB, over the target's 20 MB` });
+      continue;
+    }
+    const bytes = await readFile(entry.path);
+    const type = sniff(bytes);
+    if (!type) {
+      report.unattachable.push({ sourceId: entry.sourceId, reason: `${fileNameOf(entry)} is not an image or a PDF by its first bytes` });
+      continue;
+    }
+    try {
+      const made = await target.call("uploadAttachment", {
+        entityType: entityType.data, entityId,
+        fileName: fileNameOf(entry),
+        contentType: type,
+        bytes: bytes.toString("base64"),
+      }, { idempotencyKey: ledger.idempotencyKey(key) });
+      await ledger.record({ key, target: made.id });
+      if (made.alreadyHeld) report.already += 1;
+      else report.uploaded += 1;
+    } catch (error) {
+      if (error instanceof TargetError && !error.retryable && error.status !== 401 && error.status !== 403) {
+        report.failed.push({ sourceId: entry.sourceId, reason: error.message });
+        continue;
+      }
+      report.aborted = (error as Error).message;
+      break;
+    }
+  }
+  return report;
+}

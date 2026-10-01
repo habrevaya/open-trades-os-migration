@@ -7,7 +7,10 @@ import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { Snapshot } from "../src/snapshot/index.js";
 import { csv } from "../src/adapters/csv/index.js";
-import { fetchAttachments, download, safeSegment } from "../src/attachments/index.js";
+import { fetchAttachments, uploadAttachments, download, safeSegment } from "../src/attachments/index.js";
+import { HttpTarget } from "../src/target/client.js";
+import { MemoryTarget } from "../src/target/memory.js";
+import { startFakeTarget, TOKEN } from "./fake-target.js";
 import { Ledger } from "../src/load/ledger.js";
 import { buildMapping, writeMapping, readMapping } from "../src/mapping/index.js";
 import { jobber } from "../src/adapters/jobber/index.js";
@@ -121,6 +124,46 @@ describe("attachments", () => {
     await expect(download(`${base}/expired.pdf`, path, quiet)).rejects.toThrow("HTTP 403");
     await expect(readFile(`${path}.part`)).rejects.toThrow();
     await expect(readFile(path)).rejects.toThrow();
+  });
+});
+
+describe("attaching them in OpenTradesOS", () => {
+  const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("a photograph of a furnace")]);
+
+  it("attaches each file to the record load made, once, and says what the target will not store", async () => {
+    await mkdir(join(dir, "export", "files"), { recursive: true });
+    await writeFile(join(dir, "export", "files", "furnace.jpg"), JPEG);
+    await writeFile(join(dir, "export", "files", "notes.docx"), "PK not a pdf");
+    const snapshot = await snapshotWith([
+      "A-1,customer,C-1,furnace.jpg,,files/furnace.jpg",
+      "A-2,customer,C-1,notes.docx,,files/notes.docx",
+      "A-3,customer,C-9,furnace.jpg,,files/furnace.jpg",
+    ].join("\n"));
+    const report = await fetchAttachments(snapshot, csv, { retry: quiet });
+    expect(report.downloaded).toBe(3);
+
+    const memory = new MemoryTarget();
+    const fake = await startFakeTarget(memory);
+    try {
+      const customer = await memory.call("createCustomer", { name: "Ada" });
+      const ledger = Ledger.memory("t", "csv");
+      await ledger.record({ key: "customer:C-1", target: customer.id });
+      const target = new HttpTarget(fake.url, TOKEN);
+
+      const first = await uploadAttachments(report.dir, target, ledger);
+      expect(first).toMatchObject({ uploaded: 1, already: 0, failed: [] });
+      expect(first.unattachable).toEqual([{ sourceId: "A-2", reason: "notes.docx is not an image or a PDF by its first bytes" }]);
+      expect(first.notLoaded).toEqual([{ sourceId: "A-3", reason: "customer C-9 is not in the target" }]);
+      const [attached] = [...memory.attachments.values()];
+      expect(attached).toMatchObject({ entityType: "customer", entityId: customer.id, fileName: "furnace.jpg", contentType: "image/jpeg", kind: "photo" });
+      expect(fake.log.find((r) => r.path === "/api/v1/attachments")?.idempotencyKey).toMatch(/^otsm-/);
+
+      const second = await uploadAttachments(report.dir, target, ledger);
+      expect(second).toMatchObject({ uploaded: 0, already: 1 });
+      expect(memory.attachments.size).toBe(1);
+    } finally {
+      await fake.close();
+    }
   });
 });
 

@@ -3,6 +3,7 @@ import * as money from "../money/index.js";
 import { ROUTES, JOB_TRANSITIONS, type RouteName, type InputOf, type OutputOf, type JobStatus, type ExternalRef } from "./contracts.js";
 import { TargetError, type CallOptions, type Target } from "./client.js";
 import { computeInvoice, TaxAsAppliedError } from "./totals.js";
+import { sniff, MAX_ATTACHMENT_BYTES } from "./files.js";
 
 /**
  * A SCRATCH TENANT, IN MEMORY
@@ -522,7 +523,7 @@ export class MemoryTarget implements Target {
         };
         this.need(records[entityType]!, input["entityId"], entityType);
         const bytes = Buffer.from(String(input["bytes"]), "base64");
-        if (bytes.length > 20 * 1024 * 1024) throw new TargetError(413, "That file is over 20 MB.");
+        if (bytes.length > MAX_ATTACHMENT_BYTES) throw new TargetError(413, "That file is over 20 MB.");
         const type = sniff(bytes);
         if (!type) throw new TargetError(415, `${String(input["fileName"])} is not a type this product stores.`);
         const storageKey = createHash("sha256").update(bytes).digest("hex");
@@ -822,17 +823,4 @@ function nextDue(s: MemorySchedule): string | null {
     return null;
   }
   return s.startsOn;
-}
-
-/** core files: what a file is, from its first bytes. The allow list has no SVG on purpose. */
-export function sniff(bytes: Buffer): string | undefined {
-  const starts = (...sig: number[]) => sig.every((b, i) => bytes[i] === b);
-  if (starts(0x89, 0x50, 0x4e, 0x47)) return "image/png";
-  if (starts(0xff, 0xd8, 0xff)) return "image/jpeg";
-  if (starts(0x47, 0x49, 0x46, 0x38)) return "image/gif";
-  if (starts(0x52, 0x49, 0x46, 0x46) && bytes.subarray(8, 12).toString("latin1") === "WEBP") return "image/webp";
-  if (starts(0x00, 0x00, 0x01, 0x00)) return "image/x-icon";
-  if (bytes.subarray(4, 8).toString("latin1") === "ftyp" && /^(heic|heix|mif1|msf1|hevc)/.test(bytes.subarray(8, 12).toString("latin1"))) return "image/heic";
-  if (starts(0x25, 0x50, 0x44, 0x46)) return "application/pdf";
-  return undefined;
 }

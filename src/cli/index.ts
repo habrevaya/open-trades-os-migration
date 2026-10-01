@@ -13,7 +13,7 @@ import { Ledger, defaultLedgerPath } from "../load/ledger.js";
 import { HttpTarget, apiBase } from "../target/client.js";
 import { MemoryTarget } from "../target/memory.js";
 import { readTarget } from "../target/read.js";
-import { fetchAttachments } from "../attachments/index.js";
+import { fetchAttachments, uploadAttachments } from "../attachments/index.js";
 import { defaultRetry } from "../adapters/http.js";
 
 /**
@@ -340,12 +340,13 @@ program
 
 program
   .command("attachments")
-  .description("Second pass for photos and documents. Downloads and indexes them locally; see docs/target-api-gaps.md.")
+  .description("Second pass for photos and documents: download and index them, then, with --target, attach each to its record.")
   .option("-i, --in <dir>", "snapshot directory", "./snapshot")
   .option("-o, --out <dir>", "where files land (default <in>/attachments)")
-  .option("-t, --target <url>", "index each file against the record load made in this target")
+  .option("-t, --target <url>", "attach each file to the record load made in this target")
   .option("--ledger <file>", "load ledger (default <in>/load/<host>.ledger.ndjson)")
-  .action(async (options: { in: string; out?: string; target?: string; ledger?: string }) => {
+  .option("--no-upload", "with --target: only index files against their target records, attach nothing")
+  .action(async (options: { in: string; out?: string; target?: string; ledger?: string; upload: boolean }) => {
     const snapshot = await openSnapshot(options.in);
     const adapter = resolve(snapshot.source);
     if (!adapter.capabilities.hasAttachments) {
@@ -357,8 +358,9 @@ program
       return;
     }
     let ledger: Ledger | undefined;
+    let base: string | undefined;
     if (options.target) {
-      const base = apiBase(options.target);
+      base = apiBase(options.target);
       ledger = await Ledger.open(options.ledger ?? defaultLedgerPath(options.in, base), base, snapshot.source, snapshot.info.account ?? "")
         .catch((error: Error) => fail(error.message));
     }
@@ -377,8 +379,29 @@ program
       process.exitCode = 1;
     }
     console.log(`\n  Files and index.ndjson are in ${report.dir}.`);
-    console.log(pc.yellow(`  They are NOT attached in OpenTradesOS: its API has no upload route a migration can use`));
-    console.log(pc.yellow(`  (attachments.upload in docs/target-api-gaps.md). The index names each file's target record.\n`));
+    if (!ledger || !base || !options.upload) {
+      console.log(`  Not attached in OpenTradesOS. Run again with --target <url>${options.upload ? "" : " and without --no-upload"} to attach them.\n`);
+      return;
+    }
+
+    const uploaded = await uploadAttachments(report.dir, new HttpTarget(base, targetToken()), ledger, {
+      onProgress: (n) => process.stdout.write(`\r  attaching  ${String(n).padStart(8)}`),
+    });
+    process.stdout.write("\n\n");
+    console.log(`  attached     ${String(uploaded.uploaded).padStart(8)}`);
+    console.log(`  already      ${String(uploaded.already).padStart(8)}`);
+    const list = (title: string, rows: { sourceId: string; reason: string }[]) => {
+      if (rows.length === 0) return;
+      console.log(`  ${title.padEnd(12)} ${String(rows.length).padStart(8)}`);
+      for (const r of rows.slice(0, 20)) console.log(`    ${r.sourceId}: ${r.reason}`);
+      if (rows.length > 20) console.log(`    ...and ${rows.length - 20} more`);
+    };
+    list("not loaded", uploaded.notLoaded);
+    list("unattachable", uploaded.unattachable);
+    list("refused", uploaded.failed);
+    if (uploaded.aborted) console.log(pc.red(`\n  STOPPED: ${uploaded.aborted}. Run the same command again to resume.`));
+    if (uploaded.failed.length > 0 || uploaded.aborted) process.exitCode = 1;
+    console.log("");
   });
 
 program

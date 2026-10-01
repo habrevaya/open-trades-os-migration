@@ -162,6 +162,11 @@ export class Ledger {
     return this.entries.has(key);
   }
 
+  /** Every entry, for the few passes that look by something other than the key. */
+  all(): IterableIterator<LedgerEntry> {
+    return this.entries.values();
+  }
+
   /** Top-level entries for one entity, for reconcile. */
   *of(entity: string): Generator<LedgerEntry> {
     const prefix = `${entity}:`;
