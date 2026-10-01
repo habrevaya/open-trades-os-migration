@@ -44,8 +44,8 @@ const program = new Command()
 function credentialsFor(source: string, options: { from?: string; columns?: string } = {}): Record<string, string> {
   // A spreadsheet export is reached by its path, not a token, and a path is
   // not a secret, so it is the one credential that is a flag.
-  if (source === "csv") {
-    if (!options.from) fail("The csv source reads a directory of exports. Pass --from <dir>.");
+  if (FILE_SOURCES.includes(source)) {
+    if (!options.from) fail(`The ${source} source reads a directory of exports. Pass --from <dir>.`);
     return { dir: options.from, ...(options.columns ? { columns: options.columns } : {}) };
   }
 
@@ -74,6 +74,9 @@ function credentialsFor(source: string, options: { from?: string; columns?: stri
   }
   return { token, key: token, ...extra };
 }
+
+/** Sources read from files the operator exported, reached by --from rather than a token. */
+const FILE_SOURCES = ["csv", "fieldedge"];
 
 /** Where each API source's credential lives. The first name is the documented one. */
 const TOKEN_ENV: Record<string, string[]> = {
@@ -131,8 +134,8 @@ program
   .description("Pull everything from the source into a local raw snapshot. Never writes to OpenTradesOS.")
   .requiredOption("-s, --source <source>", "jobber | housecall-pro | csv | workiz | servicem8 | servicetitan | fieldedge")
   .option("-o, --out <dir>", "snapshot directory", "./snapshot")
-  .option("--from <dir>", "csv only: the directory holding the exported files")
-  .option("--columns <file>", "csv only: column mapping, if not <from>/columns.json")
+  .option("--from <dir>", "file sources (csv, fieldedge): the directory holding the exported files")
+  .option("--columns <file>", "file sources: column mapping, if not <from>/columns.json")
   .action(async (options: { source: string; out: string; from?: string; columns?: string }) => {
     const adapter = resolve(options.source);
     const credentials = credentialsFor(adapter.id, options);

@@ -181,6 +181,7 @@ These have canonical shapes and adapters that produce them, so `extract` and
   already created, which `sources` says for each. See
   [recurring-schedules.md](recurring-schedules.md).
 - **Equipment**, on properties, with serials and warranty dates
-  (`equipment`). Produced by Generic CSV (`equipment.csv`).
+  (`equipment`). Produced by FieldEdge (Equipment List) and Generic CSV
+  (`equipment.csv`).
 - **Contacts** beyond the customer's own email and phone (`contact`).
   Produced by Generic CSV (`contacts.csv`).

@@ -127,7 +127,9 @@ Keys under `files` are the file names above without `.csv`. Under `columns`,
 the documented name is on the left and the export's header on the right. The
 same export file may be named for two entities and the same header may feed
 two columns, which is how a customer list carrying a service address becomes
-both customers and properties. `fixtures/csv/mapped` is a working example.
+both customers and properties. `fixtures/csv/mapped` is a working example,
+and the FieldEdge source ([fieldedge.md](fieldedge.md)) is this same adapter
+with a columns.json built in.
 
 The settings are stamped onto every row in the snapshot, so `profile`,
 `dryrun` and `load` read amounts the same way `extract` did, without needing

@@ -1,0 +1,2 @@
+Customer,Quote #,Date,Status,Expiration,Amount,Balance,Sales Person,Address 1,Address 2,City,State,Zip,Primary Phone,Primary Email,Lead Source,Task,Resulting WO
+"Whitfield, Dana",Q-3301,2/1/2024,Accepted,3/2/2024,"$6,200.00",$0.00,Sam Lee,4102 Ramsey Ave,,Austin,TX,78756,(512) 555-0192,dana.w@example.com,Referral,Replace furnace,10430

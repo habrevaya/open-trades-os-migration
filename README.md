@@ -32,7 +32,7 @@ against it to the cent or says exactly why not.
 | Workiz | REST, API key | **Reads.** Jobs with team, customers and properties split out of them, invoices from job totals, team. No payments, lines or leads: the public API does not list them. See [docs/workiz.md](docs/workiz.md) |
 | ServiceM8 | REST, OAuth | Planned |
 | ServiceTitan | Self run export | Planned. See below |
-| FieldEdge | CSV export only | Use Generic CSV with a `columns.json` |
+| FieldEdge | CSV export only | **Reads** FieldEdge's own five exports (customers, dispatches, invoices, quotes, equipment) with their columns built in. No payments or lines: not exported. See [docs/fieldedge.md](docs/fieldedge.md) |
 
 | Command | Status |
 |---|---|
