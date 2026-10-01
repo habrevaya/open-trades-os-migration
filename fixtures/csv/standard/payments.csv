@@ -1,0 +1,4 @@
+id,customer_id,method,amount,received_at,invoice_id
+PAY-1,C-100,card,344.24,2023-09-22,I-1
+PAY-2,C-200,check,"2,600.50",11/04/2022,I-2
+PAY-3,C-100,check,500.00,2024-02-01,

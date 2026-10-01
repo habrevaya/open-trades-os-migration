@@ -93,6 +93,38 @@ export async function transform(
   return { counts, failures, profile: profiler.report(snapshot.source, snapshot.info.account) };
 }
 
+/**
+ * One canonical entity, streamed, with its unreadable records interleaved.
+ *
+ * `transform` walks every entity in one order for the profile. The loader
+ * needs something narrower: one entity at a time, in its own dependency
+ * order, so that customers are all in the target before the first property
+ * names one. This is that, built on the same derivations, so the two can
+ * never disagree about which raw file an entity comes from.
+ */
+export async function* canonicalRecords(
+  snapshot: Snapshot,
+  adapter: SourceAdapter,
+  entity: EntityName,
+): AsyncGenerator<{ record: Record<string, unknown> } | { failure: TransformFailure }> {
+  const derivation = derivations(adapter).find((d) => d.to === entity);
+  if (!derivation) return;
+  for await (const raw of snapshot.records<Record<string, unknown>>(derivation.from)) {
+    let produced: unknown;
+    try {
+      produced = adapter.toCanonical(entity, raw);
+    } catch (error) {
+      const message = (error as Error).message;
+      if (message.includes("no canonical mapping")) return;
+      yield { failure: { entity, sourceId: String(raw["id"] ?? ""), error: message } };
+      continue;
+    }
+    for (const canonical of Array.isArray(produced) ? produced : [produced]) {
+      yield { record: canonical as Record<string, unknown> };
+    }
+  }
+}
+
 /** A sink that keeps everything. For tests and for small accounts only. */
 export class MemorySink implements TransformSink {
   readonly records = new Map<EntityName, Record<string, unknown>[]>();

@@ -20,35 +20,42 @@ strategy.
 
 ## Status
 
-**Phase 1.** Two adapters read, and three of the seven commands work. Nothing
-writes to a target yet, which means everything that runs today runs against
-your account without changing anything in it.
+**Phase 2.** Three sources read, and all seven commands run: a snapshot now
+lands in OpenTradesOS, through its public API, resumably, and reconciles
+against it to the cent or says exactly why not.
 
 | Source | Route | Status |
 |---|---|---|
 | Jobber | GraphQL, OAuth | **Reads.** Clients, properties, quotes, jobs with visits, invoices, payments, products, users |
 | Housecall Pro | REST, OAuth or API key | **Reads.** Customers with derived properties, estimates, jobs, invoices, employees |
+| Generic CSV | Mapped CSV | **Reads.** Every entity, from any export, with a column mapping. See [docs/generic-csv.md](docs/generic-csv.md) |
 | Workiz | REST, API key | Planned |
 | ServiceM8 | REST, OAuth | Planned |
 | ServiceTitan | Self run export | Planned. See below |
-| FieldEdge | CSV export only | Planned |
-| Generic CSV | Mapped CSV | Planned |
+| FieldEdge | CSV export only | Use Generic CSV with a `columns.json` |
 
 | Command | Status |
 |---|---|
 | `sources` | Works. Lists what each adapter reads and what it cannot |
 | `extract` | Works. Resumable, checkpointed, rate limit aware |
 | `profile` | Works. Counts, date spans, fill rates, money totals, findings |
-| `reconcile` | Works. Counts and four dollar totals against what the target reports |
-| `map` | Not written |
-| `dryrun` | Not written |
-| `load` | Not written |
-| `attachments` | Not written |
+| `map` | Works. Writes `mapping.json`: technicians, job types, statuses, payment methods. You edit it; re-running keeps your edits |
+| `dryrun` | Works. The real loader against a scratch tenant in memory: every request validated, every failure named, reconcile predicted |
+| `load` | Works. Public API only, dependency ordered, resumable from a local ledger, idempotent on source ids |
+| `attachments` | Partly. Downloads, hashes and indexes every file locally. Cannot attach them: the target API has no upload route yet |
+| `reconcile` | Works. Reads the target back and compares counts and four dollar totals |
 
-The mapping logic is covered by 120 tests against fixtures, so it can be
-checked without a live account. What no test can tell you is whether a real
-Jobber tenant matches the fixtures, and the answer for some field will be no.
-That is what `profile` is for, and it is why `load` is last rather than first.
+What the target's API cannot yet take is not faked. It is listed, endpoint
+by endpoint, in [docs/target-api-gaps.md](docs/target-api-gaps.md), and every
+load and dry run counts the records each gap touched. The two that cost the
+most: historical tax is not carried (the target computes tax as zero), and
+everything posts to the ledger dated the day of the load.
+
+The mapping and loading logic is covered by 184 tests against fixtures and
+a fake OpenTradesOS served over real HTTP, including a load killed after each
+of its writes in turn and resumed. What no test can tell you is whether a
+real tenant matches the fixtures, and for some field the answer will be no.
+That is what `profile` and `dryrun` are for, and why `load` is last.
 
 ## Try it without risking anything
 
@@ -88,6 +95,43 @@ going back maybe twelve years". This is where that becomes a number, and
 where the 1,180 customers you cannot email turn up before the cutover rather
 than after it.
 
+## Then load it
+
+```
+npx @opentradesos/migrate map --in ./snapshot        # then edit snapshot/mapping.json
+npx @opentradesos/migrate dryrun --in ./snapshot
+export OPENTRADESOS_TOKEN=ots_...                     # a connected app token
+npx @opentradesos/migrate load --in ./snapshot --target https://ots.example.com
+npx @opentradesos/migrate reconcile --in ./snapshot --target https://ots.example.com
+```
+
+`dryrun` runs the same loader, request for request, against an in-memory
+tenant that behaves as the target's services do, and ends with the reconcile
+you would get. The report reads like this (numbers illustrative):
+
+```
+                    new already  mapped skipped blocked invalid refused  unread
+  customers        9411       -       -       -       -       -       -       1
+  properties      11020       -       -       -       -       3       -       -
+  jobs            40984       -       -       -      38       -       -       -
+
+WOULD BE REFUSED BY THE TARGET (3)
+  property adr_9: the target's contract refuses this record
+      address.line1: String must contain at least 1 character(s)
+
+WAITING ON A RECORD THAT DID NOT LOAD (38)
+  job 1043: property 999 is not in the target
+
+WHAT THE TARGET API COULD NOT TAKE (docs/target-api-gaps.md)
+   38110  invoice.issued_on: The historical issue date is replaced by the load date...
+      14  payment.unapplied: A deposit or account credit cannot be recorded as unapplied money...
+```
+
+`load` keeps a ledger beside the snapshot, source id to target id, and sends
+every create with an idempotency key derived from the source record. Kill it
+at any point and run it again: nothing is created twice and nothing is
+skipped. See [docs/loading.md](docs/loading.md).
+
 ## How it works
 
 Seven commands, each idempotent and resumable, each producing an artifact you
@@ -96,9 +140,9 @@ can inspect before the next one runs.
 ```
 extract      Pull into a local raw snapshot. Never writes to the target
 profile      Report counts, date ranges, fill rates, custom fields, anomalies
-map          Map users, job types, tax codes and custom fields. Saved, reusable
-dryrun       Full transform into a scratch tenant, with a diff. Touches nothing
-load         Batched, resumable, idempotent on source ids
+map          Map technicians, job types and statuses. Saved, reusable, yours to edit
+dryrun       The real load into a scratch tenant in memory. Touches nothing
+load         Through the public API. Resumable, idempotent on source ids
 attachments  Second pass for photos and documents. Slow and rate limited
 reconcile    Prove it. Counts and dollar totals, with a discrepancy report
 ```
@@ -117,6 +161,13 @@ mapping, never touching the loader.
 Every canonical record carries `sourceSystem`, `sourceId` and `sourcePayload`.
 That makes the load idempotent, makes reconciliation possible, and means a
 botched run is re-runnable instead of a restore from backup.
+
+The loader writes only through OpenTradesOS's public HTTP API, with a
+connected-app token, never to its database. That is what lets it work against
+any deployment, hosted or self hosted, and what makes every migrated record
+go through the same rules (ledger postings, the job lifecycle, the audit
+trail) as one typed in by hand. Where that API cannot yet take something,
+the gap is written down rather than worked around.
 
 Money is never a JS number anywhere in this toolkit. Every amount is a decimal
 string, and every operation on one goes through `src/money`, which holds it as

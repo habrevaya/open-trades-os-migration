@@ -186,6 +186,8 @@ export function createHousecallProAdapter(options: HousecallProOptions = {}): So
       case "job": return map.toJob(value);
       case "invoice": return map.toInvoice(value);
       case "payment": return map.toPayment(value);
+      case "user": return map.toUser(value);
+      case "estimate": return map.toEstimate(value);
       default:
         throw new Error(`Housecall Pro adapter has no canonical mapping for "${entity}" yet`);
     }

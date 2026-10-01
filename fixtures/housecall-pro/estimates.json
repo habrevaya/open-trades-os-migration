@@ -1,0 +1,16 @@
+[
+  {
+    "id": "est_501",
+    "estimate_number": 501,
+    "work_status": "needs scheduling",
+    "customer": { "id": "cus_8f21" },
+    "address": { "id": "adr_2", "street": "1900 Bluebonnet Ln", "city": "Austin", "state": "TX", "zip": "78704" },
+    "created_at": "2025-03-02T16:00:00Z",
+    "options": [
+      { "id": "opt_1", "name": "Repair", "approval_status": "declined", "total_amount": 40000,
+        "line_items": [{ "name": "Capacitor and contactor", "quantity": 1, "unit_price": 40000, "total": 40000 }] },
+      { "id": "opt_2", "name": "Replace", "approval_status": "approved", "total_amount": 620000,
+        "line_items": [{ "name": "3 ton condenser", "quantity": 1, "unit_price": 620000, "total": 620000 }] }
+    ]
+  }
+]

@@ -1,7 +1,8 @@
 import * as money from "../../money/index.js";
 import type {
   CanonicalCustomer, CanonicalProperty, CanonicalJob, CanonicalInvoice,
-  CanonicalPayment, CanonicalVisit,
+  CanonicalPayment, CanonicalVisit, CanonicalInvoiceLine, CanonicalUser,
+  CanonicalEstimate,
 } from "../../canonical/index.js";
 
 /**
@@ -194,16 +195,9 @@ const intOrUndefined = (v: unknown): number | undefined => {
   return typeof n === "number" && Number.isInteger(n) ? n : undefined;
 };
 
-/**
- * Housecall Pro does not separate job from invoice the way Jobber does: an
- * invoice is largely a view over the job's line items and totals. The invoice
- * is still materialized here, because receivables have to exist as documents
- * for the balance to mean anything, and `outstanding_balance` is the number a
- * contractor will check first on the morning after the cutover.
- */
-export function toInvoice(raw: Record<string, unknown>): CanonicalInvoice {
-  const customerId = String(record(raw["customer"])["id"] ?? raw["customer_id"] ?? "");
-  const lines = list(raw["line_items"]).map(record).map((li) => {
+/** Line items, in cents, shared by invoices and estimate options. */
+function lineItems(value: unknown): CanonicalInvoiceLine[] {
+  return list(value).map(record).map((li) => {
     const quantity = money.normalize(li["quantity"] ?? 1);
     const unitPrice = cents(li["unit_price"] ?? li["amount"]);
     return {
@@ -218,6 +212,18 @@ export function toInvoice(raw: Record<string, unknown>): CanonicalInvoice {
       priceBookItemSourceId: text(li["price_book_item_uuid"]) ?? text(li["service_item_id"]),
     };
   });
+}
+
+/**
+ * Housecall Pro does not separate job from invoice the way Jobber does: an
+ * invoice is largely a view over the job's line items and totals. The invoice
+ * is still materialized here, because receivables have to exist as documents
+ * for the balance to mean anything, and `outstanding_balance` is the number a
+ * contractor will check first on the morning after the cutover.
+ */
+export function toInvoice(raw: Record<string, unknown>): CanonicalInvoice {
+  const customerId = String(record(raw["customer"])["id"] ?? raw["customer_id"] ?? "");
+  const lines = lineItems(raw["line_items"]);
 
   const total = cents(raw["total_amount"]);
   const tax = cents(raw["tax_amount"]);
@@ -252,5 +258,67 @@ export function toPayment(raw: Record<string, unknown>): CanonicalPayment {
     amount,
     receivedAt: text(raw["paid_at"]) ?? text(raw["created_at"]) ?? "",
     allocations: invoiceId ? [{ invoiceSourceId: invoiceId, amount }] : [],
+  };
+}
+
+/** Employees. Housecall Pro has no deactivated flag in the list response we have seen. */
+export function toUser(raw: Record<string, unknown>): CanonicalUser {
+  const name = [text(raw["first_name"]), text(raw["last_name"])].filter(Boolean).join(" ");
+  return {
+    sourceSystem: SOURCE,
+    sourceId: String(raw["id"] ?? ""),
+    sourcePayload: raw,
+    name: name || text(raw["email"]) || "Unnamed employee",
+    email: text(raw["email"]),
+    phone: text(raw["mobile_number"]),
+    active: raw["is_active"] !== false,
+    role: text(raw["role"]),
+  };
+}
+
+/**
+ * Estimates.
+ *
+ * Housecall Pro puts the options, and the approval, on the estimate's
+ * `options` array, each with its own line items and an `approval_status`.
+ * The shape here is read from the published API reference and has not yet
+ * been checked against a real export, so these are the lines to look at
+ * first when a real one disagrees.
+ *
+ * Status is lifted from the options, because that is where the customer's
+ * decision lives: an estimate with one approved option is approved, whatever
+ * the estimate's own `work_status` says about scheduling.
+ */
+export function toEstimate(raw: Record<string, unknown>): CanonicalEstimate {
+  const customerId = String(record(raw["customer"])["id"] ?? raw["customer_id"] ?? "");
+  const options = list(raw["options"]).map(record);
+  const approvals = options.map((o) => (text(o["approval_status"]) ?? "").toLowerCase());
+  const status = approvals.includes("approved") ? "approved"
+    : approvals.length > 0 && approvals.every((a) => a === "declined") ? "declined"
+    : text(raw["work_status"]) ?? "unknown";
+
+  const address = record(raw["address"]);
+  const totals = options.map((o) => cents(o["total_amount"]));
+  return {
+    sourceSystem: SOURCE,
+    sourceId: String(raw["id"] ?? ""),
+    sourcePayload: raw,
+    customerSourceId: customerId,
+    propertySourceId: Object.keys(address).length > 0 ? propertyId(customerId, address) : undefined,
+    number: intOrUndefined(raw["estimate_number"]),
+    status,
+    title: text(raw["description"]) ?? text(raw["note"]),
+    issuedOn: text(raw["created_at"]),
+    // The approved option's total when there is one, because that is the
+    // number the customer agreed to. Summing every option would add the
+    // repair to the replacement.
+    total: totals[approvals.indexOf("approved")] ?? totals[0] ?? "0.0000",
+    subtotal: totals[approvals.indexOf("approved")] ?? totals[0] ?? "0.0000",
+    taxTotal: "0.0000",
+    options: options.map((o, i) => ({
+      name: text(o["name"]) ?? `Option ${i + 1}`,
+      isRecommended: approvals[i] === "approved",
+      lines: lineItems(o["line_items"]),
+    })),
   };
 }

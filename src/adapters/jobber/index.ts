@@ -227,6 +227,9 @@ export function createJobberAdapter(options: JobberClientOptions = {}): SourceAd
       case "job": return map.toJob(value);
       case "invoice": return map.toInvoice(value);
       case "payment": return map.toPayment(value);
+      case "user": return map.toUser(value);
+      case "priceBookItem": return map.toPriceBookItem(value);
+      case "estimate": return map.toEstimate(value);
       default:
         throw new Error(`Jobber adapter has no canonical mapping for "${entity}" yet`);
     }

@@ -1,0 +1,3 @@
+id,name,email,phone,active,role
+u-1,Ray Ortiz,ray@example.com,512-555-0101,yes,technician
+u-2,Nia Osei,nia@example.com,,no,technician

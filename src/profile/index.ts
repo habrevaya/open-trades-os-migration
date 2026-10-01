@@ -99,6 +99,9 @@ const TRACKED: Partial<Record<EntityName, string[]>> = {
   invoice: ["status", "issuedOn", "dueOn", "total", "balance", "lines"],
   payment: ["method", "status", "amount", "allocations"],
   equipment: ["category", "manufacturer", "serialNumber", "installedOn"],
+  estimate: ["status", "total", "propertySourceId", "options"],
+  priceBookItem: ["kind", "code", "price", "cost"],
+  user: ["email", "active"],
 };
 
 const dateOf = (rec: Record<string, unknown>): string | undefined => {

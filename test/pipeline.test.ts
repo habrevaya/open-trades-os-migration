@@ -166,12 +166,15 @@ describe("resilience", () => {
   });
 
   it("does not list an unmapped entity as ten thousand failures", async () => {
+    // Equipment is declared here and mapped nowhere, which is the shape of an
+    // adapter partway through being written.
+    const partial = { ...jobber, capabilities: { ...jobber.capabilities, entities: [...jobber.capabilities.entities, "equipment" as const] } };
     const snapshot = await Snapshot.open(dir, "jobber");
-    await snapshot.append("estimate", [{ id: "q1" }, { id: "q2" }, { id: "q3" }]);
+    await snapshot.append("equipment", [{ id: "q1" }, { id: "q2" }, { id: "q3" }]);
     await snapshot.flush();
-    const result = await transform(snapshot, jobber, new MemorySink());
+    const result = await transform(snapshot, partial, new MemorySink());
     expect(result.failures).toEqual([]);
-    expect(result.counts.estimate).toBeUndefined();
+    expect(result.counts.equipment).toBeUndefined();
   });
 });
 

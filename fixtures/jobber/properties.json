@@ -1,0 +1,22 @@
+[
+  {
+    "id": "Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzEx",
+    "name": "Home",
+    "client": { "id": "Z2lkOi8vSm9iYmVyL0NsaWVudC8x" },
+    "address": {
+      "street1": "4102 Ramsey Ave", "street2": null, "city": "Austin", "province": "TX",
+      "postalCode": "78756", "country": "US", "latitude": 30.3204, "longitude": -97.7468
+    },
+    "customFields": []
+  },
+  {
+    "id": "Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzEy",
+    "name": null,
+    "client": { "id": "Z2lkOi8vSm9iYmVyL0NsaWVudC8y" },
+    "address": {
+      "street1": "900 Congress Ave", "street2": "Suite 400", "city": "Austin", "province": "TX",
+      "postalCode": "78701", "country": "US"
+    },
+    "customFields": [{ "label": "Loading dock", "valueText": "Rear, 7am to 3pm" }]
+  }
+]

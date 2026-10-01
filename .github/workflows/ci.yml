@@ -26,7 +26,18 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
 
+      - run: pnpm build
+
       - name: The CLI runs
         # A toolkit whose tests pass and whose binary does not start is worse
         # than useless, because the failure lands on the operator at 2am.
         run: pnpm dev sources
+
+      - name: A snapshot goes all the way through
+        # Extract a real export from files, then load it into the in-memory
+        # tenant. The tests prove the parts; this proves the commands are
+        # wired to them.
+        run: |
+          pnpm dev extract --source csv --from fixtures/csv/mapped --out "$RUNNER_TEMP/snapshot"
+          pnpm dev map --in "$RUNNER_TEMP/snapshot"
+          pnpm dev dryrun --in "$RUNNER_TEMP/snapshot"

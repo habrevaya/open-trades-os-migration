@@ -1,0 +1,4 @@
+[
+  { "id": "u-1", "name": { "first": "Ray", "last": "Ortiz", "full": "Ray Ortiz" }, "email": { "raw": "ray@example.com" }, "phone": { "raw": "512-555-0101" }, "status": "ACTIVE", "isAccountAdmin": false },
+  { "id": "u-2", "name": { "first": "Nia", "last": "Osei", "full": "Nia Osei" }, "email": { "raw": "nia@example.com" }, "phone": null, "status": "DEACTIVATED", "isAccountAdmin": false }
+]

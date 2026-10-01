@@ -165,6 +165,75 @@ export const CanonicalAttachment = Provenance.extend({
   localPath: z.string().optional(),
 });
 
+/**
+ * A person who did work in the source system: a technician, an office user,
+ * somebody who left in 2019 and still appears on four hundred visits.
+ *
+ * Carried so that visits can name who was there, not so that accounts can be
+ * created. Logins are a decision about who may see a company's data, and a
+ * migration tool minting them from a spreadsheet is exactly the wrong place
+ * for that decision to be made. The operator maps each of these to a person
+ * who already exists in the target, during `map`.
+ */
+export const CanonicalUser = Provenance.extend({
+  name: z.string(),
+  email: z.string().optional(),
+  phone: z.string().optional(),
+  active: z.boolean().default(true),
+  role: z.string().optional(),
+});
+
+/**
+ * A price book entry as the source holds it today.
+ *
+ * Today matters: no source in this toolkit exposes price history, so this is
+ * the CURRENT price. Historical invoice lines carry their own unit price and
+ * must never be re-priced from this record, which is why invoice lines keep
+ * `priceBookItemSourceId` as a reference and never as a price lookup.
+ */
+export const CanonicalPriceBookItem = Provenance.extend({
+  kind: z.enum(["service", "material", "equipment", "labor", "fee", "discount"]).default("service"),
+  code: z.string().optional(),
+  name: z.string(),
+  description: z.string().optional(),
+  price: Money.default("0"),
+  cost: Money.optional(),
+  taxable: z.boolean().default(true),
+  durationMinutes: z.number().int().optional(),
+  active: z.boolean().default(true),
+});
+
+/**
+ * An estimate, quote or proposal. One or more options, each a whole scope of
+ * work with its own lines, because "repair for $400 or replace for $6,200" is
+ * one document with two answers, not two documents.
+ *
+ * Sources that have a single scope produce a single option. Lines reuse the
+ * invoice line shape on purpose: an approved option becomes invoice lines,
+ * and two line shapes would be two places for a tax rate to drift.
+ */
+export const CanonicalEstimateOption = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  isRecommended: z.boolean().default(false),
+  lines: z.array(CanonicalInvoiceLine).default([]),
+});
+
+export const CanonicalEstimate = Provenance.extend({
+  customerSourceId: z.string(),
+  propertySourceId: z.string().optional(),
+  jobSourceId: z.string().optional(),
+  number: z.number().int().optional(),
+  status: z.string(),
+  title: z.string().optional(),
+  issuedOn: z.string().optional(),
+  expiresOn: z.string().optional(),
+  subtotal: Money.default("0"),
+  taxTotal: Money.default("0"),
+  total: Money.default("0"),
+  options: z.array(CanonicalEstimateOption).default([]),
+});
+
 export type CanonicalCustomer = z.infer<typeof CanonicalCustomer>;
 export type CanonicalVisit = z.infer<typeof CanonicalVisit>;
 export type CanonicalInvoiceLine = z.infer<typeof CanonicalInvoiceLine>;
@@ -174,6 +243,10 @@ export type CanonicalJob = z.infer<typeof CanonicalJob>;
 export type CanonicalInvoice = z.infer<typeof CanonicalInvoice>;
 export type CanonicalPayment = z.infer<typeof CanonicalPayment>;
 export type CanonicalAttachment = z.infer<typeof CanonicalAttachment>;
+export type CanonicalUser = z.infer<typeof CanonicalUser>;
+export type CanonicalPriceBookItem = z.infer<typeof CanonicalPriceBookItem>;
+export type CanonicalEstimate = z.infer<typeof CanonicalEstimate>;
+export type CanonicalEstimateOption = z.infer<typeof CanonicalEstimateOption>;
 
 export const ENTITY_ORDER = [
   "user", "customer", "property", "contact", "equipment", "priceBookItem",

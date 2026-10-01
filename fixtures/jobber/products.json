@@ -1,0 +1,6 @@
+[
+  { "id": "ps-1", "name": "Tune up", "description": "Two system tune up", "category": "SERVICE",
+    "defaultUnitCost": 129.0, "internalUnitCost": 45.0, "taxable": true, "durationMinutes": 90 },
+  { "id": "ps-2", "name": "Filter, 16x25x1", "description": null, "category": "PRODUCT",
+    "defaultUnitCost": 15.0, "internalUnitCost": null, "taxable": true, "durationMinutes": null }
+]
