@@ -4,6 +4,7 @@ import type { SourceAdapter } from "../adapters/types.js";
 import type { Snapshot } from "../snapshot/index.js";
 import { canonicalRecords } from "../transform/index.js";
 import { JobStatus, PaymentMethod, Uuid } from "../target/contracts.js";
+import type { Target } from "../target/client.js";
 
 /**
  * THE MAPPING FILE
@@ -23,11 +24,17 @@ import { JobStatus, PaymentMethod, Uuid } from "../target/contracts.js";
  * and a decision made interactively is a decision made three times, possibly
  * three ways. A file is made once, reviewed, and can be checked in.
  *
- * Technicians cannot be guessed and are not. The target has no API to create
- * a user, by design (who may log in is not a migration's decision), and no
- * API to list them either, so the operator copies each person's id from the
- * target's settings screen. An unmapped technician is dropped from the visits
- * they worked, and the report says how many visits that touched.
+ * Technicians are matched, never invented. The target has no API to create
+ * a person, by design (who may log in is not a migration's decision), but it
+ * lists the people it has (GET /v1/people) and its job types
+ * (GET /v1/job-types). `map --target` reads both and proposes each source
+ * technician's technician id where an email, or failing that a name, picks
+ * out exactly one person, and each job type's id where a name or code
+ * matches exactly one. A proposal is written into the file like any other
+ * value, marked in `proposed` with how it was matched, and is the operator's
+ * to change; a value already in the file is never replaced. An unmapped
+ * technician is dropped from the visits they worked, and the report says how
+ * many visits that touched.
  */
 
 export type VisitAction = "schedule" | "complete" | "cancel" | "skip";
@@ -38,7 +45,7 @@ export type PaymentAction = "load" | "skip";
 export interface Mapping {
   version: 1;
   source: string;
-  /** Source user id to the target user id they are, or null for "not mapped yet". */
+  /** Source user id to the technician id a visit names in the target, or null for "not mapped yet". */
   users: Record<string, { name: string; email?: string; target: string | null }>;
   /** Source job type name to a target job type id, or null to leave the job untyped. */
   jobTypes: Record<string, string | null>;
@@ -50,6 +57,8 @@ export interface Mapping {
   estimateStatus: Record<string, EstimateAction>;
   paymentMethods: Record<string, PaymentMethod>;
   paymentStatus: Record<string, PaymentAction>;
+  /** Values `map --target` proposed rather than a person typed, with how each was matched. */
+  proposed?: { users?: Record<string, string>; jobTypes?: Record<string, string> };
 }
 
 export const MAPPING_FILE = "mapping.json";
@@ -238,4 +247,70 @@ export async function readMapping(path: string): Promise<Mapping | undefined> {
 
 export async function writeMapping(path: string, mapping: Mapping): Promise<void> {
   await writeFile(path, JSON.stringify(mapping, null, 2) + "\n", "utf8");
+}
+
+export interface Proposals {
+  mapping: Mapping;
+  /** `users.<id>` or `jobTypes.<name>`, with how each was matched. */
+  proposed: { key: string; target: string; by: string }[];
+  /** Source values more than one target record matched, left for a person. */
+  ambiguous: string[];
+  people: number;
+  jobTypes: number;
+}
+
+const loose = (value: string | null | undefined): string => (value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+
+/**
+ * Propose target ids from what the target already has. Only a match that
+ * picks out exactly one record is proposed; two Ray Ortizes are left for a
+ * person. An email is trusted over a name, and a technician still active
+ * over one who has left, only when that settles it.
+ */
+export async function proposeFromTarget(existing: Mapping, target: Target): Promise<Proposals> {
+  const mapping: Mapping = structuredClone(existing);
+  const proposed: Proposals["proposed"] = [];
+  const ambiguous: string[] = [];
+  const marks = { users: { ...mapping.proposed?.users }, jobTypes: { ...mapping.proposed?.jobTypes } };
+
+  const { people } = await target.call("listPeople", {});
+  const technicians = people.filter((p) => p.technicianId !== null);
+  const pick = <T>(found: T[], prefer: (t: T) => boolean): T | undefined => {
+    if (found.length === 1) return found[0];
+    const preferred = found.filter(prefer);
+    return preferred.length === 1 ? preferred[0] : undefined;
+  };
+  for (const [id, user] of Object.entries(mapping.users)) {
+    if (user.target !== null && user.target !== "") continue;
+    const active = (p: (typeof technicians)[number]) => p.active && p.technicianActive !== false;
+    const byEmail = user.email ? technicians.filter((p) => loose(p.email) === loose(user.email)) : [];
+    const byName = technicians.filter((p) => loose(user.name) !== "" && (loose(p.name) === loose(user.name) || loose(p.displayName) === loose(user.name)));
+    const match = pick(byEmail, active) ?? (byEmail.length === 0 ? pick(byName, active) : undefined);
+    const by = match && byEmail.includes(match) ? "email" : "name";
+    if (match?.technicianId) {
+      user.target = match.technicianId;
+      marks.users[id] = by;
+      proposed.push({ key: `users.${id}`, target: match.technicianId, by });
+    } else if (byEmail.length > 1 || byName.length > 1) {
+      ambiguous.push(`users.${id}`);
+    }
+  }
+
+  const { data: types } = await target.call("listJobTypes", { includeInactive: true });
+  for (const [name, current] of Object.entries(mapping.jobTypes)) {
+    if (current !== null && current !== "") continue;
+    const found = types.filter((t) => loose(t.name) === loose(name) || (t.code !== null && loose(t.code) === loose(name)));
+    const match = pick(found, (t) => t.active);
+    if (match) {
+      mapping.jobTypes[name] = match.id;
+      const by = loose(match.name) === loose(name) ? "name" : "code";
+      marks.jobTypes[name] = by;
+      proposed.push({ key: `jobTypes.${name}`, target: match.id, by });
+    } else if (found.length > 1) {
+      ambiguous.push(`jobTypes.${name}`);
+    }
+  }
+
+  if (Object.keys(marks.users).length > 0 || Object.keys(marks.jobTypes).length > 0) mapping.proposed = marks;
+  return { mapping, proposed, ambiguous, people: technicians.length, jobTypes: types.length };
 }

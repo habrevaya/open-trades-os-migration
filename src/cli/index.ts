@@ -7,7 +7,7 @@ import { Snapshot } from "../snapshot/index.js";
 import { transform, CountingSink } from "../transform/index.js";
 import { renderProfile } from "../profile/index.js";
 import { reconcile, renderReconcile, sourceSide, type Side } from "../reconcile/index.js";
-import { buildMapping, check, mappingPath, readMapping, writeMapping, emptyMapping, type Mapping } from "../mapping/index.js";
+import { buildMapping, check, mappingPath, readMapping, writeMapping, emptyMapping, proposeFromTarget, type Mapping } from "../mapping/index.js";
 import { load, renderLoad, failures } from "../load/index.js";
 import { Ledger, defaultLedgerPath } from "../load/ledger.js";
 import { HttpTarget, apiBase } from "../target/client.js";
@@ -210,7 +210,8 @@ program
   .description("Write the mapping file: technicians, job types, statuses and payment methods. Edit it, then run map again.")
   .option("-i, --in <dir>", "snapshot directory", "./snapshot")
   .option("-m, --mapping <file>", "mapping file (default <in>/mapping.json)")
-  .action(async (options: { in: string; mapping?: string }) => {
+  .option("-t, --target <url>", "propose technician and job type ids from the people and job types this OpenTradesOS already has")
+  .action(async (options: { in: string; mapping?: string; target?: string }) => {
     const snapshot = await openSnapshot(options.in);
     const adapter = resolve(snapshot.source);
     const path = options.mapping ?? mappingPath(options.in);
@@ -220,10 +221,24 @@ program
     }
 
     const summary = await buildMapping(snapshot, adapter, existing);
-    await writeMapping(path, summary.mapping);
+    let mapping = summary.mapping;
+    let proposals: Awaited<ReturnType<typeof proposeFromTarget>> | undefined;
+    if (options.target) {
+      const base = apiBase(options.target);
+      proposals = await proposeFromTarget(mapping, new HttpTarget(base, targetToken()))
+        .catch((error: Error) => fail(`Could not read people and job types from ${base}: ${error.message}`));
+      mapping = proposals.mapping;
+    }
+    await writeMapping(path, mapping);
 
     console.log("");
     console.log(`  ${existing ? "Updated" : "Wrote"} ${path}${summary.added.length > 0 ? ` (${summary.added.length} new value(s))` : ""}`);
+    if (proposals) {
+      const by = (how: string) => proposals.proposed.filter((p) => p.by === how).length;
+      console.log(`  From ${options.target}: ${proposals.people} technician(s) and ${proposals.jobTypes} job type(s) read;` +
+        ` proposed ${proposals.proposed.length} (${by("email")} by email, ${by("name")} by name, ${by("code")} by code). Check them.`);
+      for (const key of proposals.ambiguous) console.log(`    ${pc.yellow("more than one match")}  ${key}`);
+    }
     reportMapping(summary.mapping);
     console.log(`\n  Edit the file, run map again to check it, then:`);
     console.log(`  ${pc.cyan(`opentradesos-migrate dryrun --in ${options.in}`)}\n`);
@@ -413,7 +428,7 @@ async function openSnapshot(dir: string): Promise<Snapshot> {
 function reportMapping(mapping: Mapping): void {
   const result = check(mapping);
   const users = Object.keys(mapping.users).length;
-  console.log(`  technicians  ${users - result.unmappedUsers.length} of ${users} mapped to a target user`);
+  console.log(`  technicians  ${users - result.unmappedUsers.length} of ${users} mapped to a target technician`);
   for (const id of result.unmappedUsers.slice(0, 15)) {
     console.log(`    ${pc.yellow("unmapped")}  ${id}  ${mapping.users[id]?.name ?? ""}`);
   }
