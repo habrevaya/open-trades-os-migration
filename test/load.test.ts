@@ -112,7 +112,7 @@ describe("load into a fake OpenTradesOS, over HTTP", () => {
     expect(report.entities.estimate).toMatchObject({ created: 2 });
     expect(report.entities.job).toMatchObject({ created: 1, blocked: 1 });
     expect(report.entities.invoice).toMatchObject({ created: 2 });
-    expect(report.entities.payment).toMatchObject({ created: 1, skipped: 1 });
+    expect(report.entities.payment).toMatchObject({ created: 2, skipped: 0 });
 
     // Job 102 names a customer that was never extracted. It waits, by name,
     // rather than loading with nobody to bill.
@@ -120,11 +120,10 @@ describe("load into a fake OpenTradesOS, over HTTP", () => {
       entity: "job", sourceId: JOB_102, outcome: "blocked",
       reason: expect.stringContaining("Z2lkOi8vSm9iYmVyL0NsaWVudC85OTk="),
     }));
-    // The deposit is not loaded, and the report says why in money.
-    expect(report.problems).toContainEqual(expect.objectContaining({
-      entity: "payment", outcome: "skipped", reason: expect.stringContaining("$500.00"),
-    }));
-    expect(report.gaps["payment.unapplied"]?.count).toBe(1);
+    // The deposit is held for the customer, not spread over old invoices.
+    const deposit = [...fake.memory.payments.values()].find((p) => p.amount === "500.0000")!;
+    expect(deposit).toMatchObject({ allocations: [], unappliedAmount: "500.0000" });
+    expect(Object.keys(report.gaps)).not.toContain("payment.unapplied");
     expect(renderLoad(report)).toContain("WAITING ON A RECORD THAT DID NOT LOAD");
   });
 
@@ -154,7 +153,18 @@ describe("load into a fake OpenTradesOS, over HTTP", () => {
 
     const invoice501 = memory.invoices.get(ledger.get(`invoice:${INVOICE_501}`)!)!;
     expect(invoice501.jobId).toBe(job.id);
-    expect(invoice501.memo).toBe("Migrated from jobber invoice #2201, issued 2023-09-21.");
+    // As it was sent: its number, its day, its tax, its total.
+    expect(invoice501).toMatchObject({
+      number: 2201, issuedOn: "2023-09-21", memo: "Migrated from jobber invoice #2201.",
+      taxTotal: "26.2400", total: "344.2400", balance: "344.2400",
+    });
+    expect(invoice501.externalRef).toEqual({ source: ledger.externalSource, id: INVOICE_501 });
+    // Lines Jobber's API cut off at the page boundary are one adjustment.
+    const invoice502 = memory.invoices.get(ledger.get(`invoice:${INVOICE_502}`)!)!;
+    expect(invoice502.lines.at(-1)).toMatchObject({ name: "Not itemised on jobber invoice #2202", origin: "manual", unitPrice: "590.0000" });
+    expect(invoice502).toMatchObject({ total: "2480.5000", balance: "-120.0000" });
+    // Linked to the price book and kept at the price it was sold at.
+    expect(invoice501.lines[0]).toMatchObject({ priceBookItemId: ledger.get("priceBookItem:ps-1"), unitPrice: "129.0000" });
 
     const payment = [...memory.payments.values()][0]!;
     expect(payment.customerId).toBe(ledger.get(`customer:${CLIENT_2}`));
@@ -227,7 +237,8 @@ describe("load into a fake OpenTradesOS, over HTTP", () => {
     expect(refused?.sourceId).toBe("adr_9");
     expect(refused?.issues?.map((i) => i.path)).toEqual(expect.arrayContaining(["address.line1", "address.city", "address.postalCode"]));
     expect(fake.memory.calls.get("createProperty")).toBe(4);
-    expect(fake.log.filter((r) => r.status === 422)).toEqual([]);
+    // The one 422 is the permission check, which the target refuses by design.
+    expect(fake.log.filter((r) => r.status === 422)).toEqual([expect.objectContaining({ method: "POST", path: "/api/v1/invoices" })]);
 
     // Everything that does not depend on it loads, including the job whose
     // property id was derived from an address with no id of its own.
@@ -315,7 +326,9 @@ describe("crash and resume", () => {
     const clean = new MemoryTarget();
     await load({ snapshot, adapter: jobber, mapping, target: clean, ledger: Ledger.memory("clean", "jobber"), concurrency: 1 });
     const expected = fingerprint(clean);
-    const total = [...clean.calls.values()].reduce((a, b) => a + b, 0);
+    // Every call that succeeds, which is every call but the permission
+    // check: the target refuses that one by design.
+    const total = [...clean.calls.values()].reduce((a, b) => a + b, 0) - 1;
     expect(total).toBeGreaterThan(15);
 
     for (let crashAt = 1; crashAt <= total; crashAt += 1) {
@@ -396,24 +409,21 @@ describe("reconcile against the target", () => {
     return { report, reconciled: reconcile(expected, reading.side), notes: reading.notes };
   }
 
-  it("reads the target back and says exactly what does not match", async () => {
+  it("reads the target back, payments included, and says exactly what does not match", async () => {
     const { reconciled, notes } = await loaded(false);
     expect(reconciled.matched).toBe(false);
-    // Job 102 is blocked and the deposit has nowhere to go.
-    expect(reconciled.counts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ entity: "job", expected: 2, actual: 1 }),
-      expect.objectContaining({ entity: "payment", expected: 2, actual: 1 }),
-    ]));
-    // $26.24 of tax and $590.00 of lines Jobber cut off at the page boundary.
-    expect(reconciled.money.find((m) => m.measure === "invoiceTotal")?.delta).toBe("-616.2400");
-    expect(notes.join(" ")).toContain("not read back");
+    // Job 102 is blocked. Nothing else is short: the tax, the lines Jobber
+    // cut off and the deposit all landed.
+    expect(reconciled.counts).toEqual([expect.objectContaining({ entity: "job", expected: 2, actual: 1 })]);
+    expect(reconciled.money).toEqual([]);
+    expect(notes.join(" ")).toContain("$500.00 of the payments read back is held for customers");
   });
 
-  it("matches invoice totals to the cent when totals are carried", async () => {
+  it("matches every dollar total to the cent", async () => {
     const { reconciled } = await loaded(true);
-    expect(reconciled.money.find((m) => m.measure === "invoiceTotal")).toBeUndefined();
-    expect(reconciled.money.find((m) => m.measure === "invoiceBalance")).toBeUndefined();
-    expect(reconciled.money.find((m) => m.measure === "paymentAllocated")).toBeUndefined();
+    for (const measure of ["invoiceTotal", "invoiceBalance", "paymentTotal", "paymentAllocated"]) {
+      expect(reconciled.money.find((m) => m.measure === measure), measure).toBeUndefined();
+    }
   });
 });
 

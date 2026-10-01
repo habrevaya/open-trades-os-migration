@@ -163,3 +163,16 @@ export class HttpTarget implements Target {
     throw new TargetError(response.status, `${name}: ${message}`, issues);
   }
 }
+
+export type Paged = { data: Record<string, unknown>[]; nextCursor: string | null; hasMore: boolean };
+
+/** Every page of a list route. */
+export async function* pages(target: Target, route: RouteName, input: Record<string, unknown>): AsyncGenerator<Record<string, unknown>> {
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await target.call(route, { limit: 200, ...input, ...(cursor ? { cursor } : {}) } as InputOf<typeof route>) as unknown as Paged;
+    for (const row of page.data) yield row;
+    if (!page.hasMore || !page.nextCursor) return;
+    cursor = page.nextCursor;
+  }
+}

@@ -3,7 +3,8 @@ import type { EntityName } from "../canonical/index.js";
 import type { Side } from "../reconcile/index.js";
 import type { Ledger } from "../load/ledger.js";
 import type { Target } from "./client.js";
-import type { RouteName, InputOf } from "./contracts.js";
+import type { RouteName } from "./contracts.js";
+import { pages } from "./client.js";
 
 /**
  * WHAT THE TARGET ACTUALLY HOLDS
@@ -19,9 +20,10 @@ import type { RouteName, InputOf } from "./contracts.js";
  * one. Records the target holds that this migration did not make are counted
  * separately and shown, so nobody wonders.
  *
- * Payments cannot be read back: the API has no list of them. Their count and
- * total come from what the target confirmed when each was recorded, and the
- * report says so rather than presenting them as verified.
+ * Payments are read back through GET /v1/payments: their count, what
+ * arrived less what was given back, and the money each still holds for the
+ * customer. A refund in the source is a record of its own there and an
+ * amount off its payment here, so it counts as present when its payment is.
  */
 
 export interface TargetReading {
@@ -42,18 +44,6 @@ const LISTS: { entity: EntityName; route: RouteName; extra?: Record<string, unkn
   { entity: "invoice", route: "listInvoices" },
 ];
 
-async function* everything(target: Target, route: RouteName, extra: Record<string, unknown>): AsyncGenerator<Record<string, unknown>> {
-  let cursor: string | undefined;
-  for (;;) {
-    const page = await target.call(route, { limit: 200, ...extra, ...(cursor ? { cursor } : {}) } as InputOf<typeof route>) as {
-      data: Record<string, unknown>[]; nextCursor: string | null; hasMore: boolean;
-    };
-    for (const row of page.data) yield row;
-    if (!page.hasMore || !page.nextCursor) return;
-    cursor = page.nextCursor;
-  }
-}
-
 export async function readTarget(target: Target, ledger: Ledger): Promise<TargetReading> {
   const counts: Partial<Record<EntityName, number>> = {};
   const missing: Partial<Record<EntityName, number>> = {};
@@ -69,7 +59,7 @@ export async function readTarget(target: Target, ledger: Ledger): Promise<Target
     if (ours.size === 0) continue;
     let found = 0;
     let others = 0;
-    for await (const row of everything(target, list.route, list.extra ?? {})) {
+    for await (const row of pages(target, list.route, list.extra ?? {})) {
       if (!ours.has(String(row["id"]))) { others += 1; continue; }
       found += 1;
       if (list.entity === "invoice") {
@@ -83,15 +73,41 @@ export async function readTarget(target: Target, ledger: Ledger): Promise<Target
     if (others > 0) other[list.entity] = others;
   }
 
+  // Payments, read back. The ledger names each payment this migration
+  // recorded, and each refund by the payment it was recorded against.
   const payments = [...ledger.of("payment")];
+  let paymentTotal = "0";
+  let unapplied = "0";
   if (payments.length > 0) {
-    counts.payment = payments.length;
-    notes.push(
-      `Payments are counted and totalled from what the target confirmed when each was recorded. ` +
-        `The API has no way to list them (read.payments in docs/target-api-gaps.md), so these two numbers are not read back.`,
-    );
+    const ours = new Set(payments.map((p) => p.target));
+    const found = new Set<string>();
+    let others = 0;
+    for await (const row of pages(target, "listPayments", {})) {
+      const id = String(row["id"]);
+      if (!ours.has(id)) { others += 1; continue; }
+      found.add(id);
+      paymentTotal = money.add(paymentTotal, money.subtract(String(row["amount"] ?? "0"), String(row["refundedAmount"] ?? "0")));
+      unapplied = money.add(unapplied, String(row["unappliedAmount"] ?? "0"));
+    }
+    counts.payment = payments.filter((p) => found.has(p.target)).length;
+    const gone = payments.length - counts.payment;
+    if (gone > 0) missing.payment = gone;
+    if (others > 0) other.payment = others;
+    if (!money.isZero(unapplied)) {
+      notes.push(`${money.display(unapplied)} of the payments read back is held for customers, applied to no invoice (deposits and credits).`);
+    }
   }
-  const paymentTotal = money.sum(payments.map((p) => p.amount ?? "0"));
+
+  // Recurring schedules carry no externalRef; the ledger's ids are what is ours.
+  const scheduleIds = new Set([...ledger.of("recurringSchedule")].map((e) => e.target));
+  if (scheduleIds.size > 0) {
+    const listed = (await target.call("listRecurringSchedules", {})).schedules;
+    counts.recurringSchedule = listed.filter((s) => scheduleIds.has(s.id)).length;
+    const gone = scheduleIds.size - counts.recurringSchedule;
+    if (gone > 0) missing.recurringSchedule = gone;
+    const others = listed.length - counts.recurringSchedule;
+    if (others > 0) other.recurringSchedule = others;
+  }
 
   for (const [entity, n] of Object.entries(missing)) {
     notes.push(`${n} ${entity} record(s) the ledger says were created are not in the target. Deleted since, or a different tenant.`);

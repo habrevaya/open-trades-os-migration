@@ -96,9 +96,10 @@ function targetToken(): string {
   if (!token) {
     fail(
       `No target credential. Set OPENTRADESOS_TOKEN to a connected app token (ots_...).\n\n` +
-        `  It needs write permission for customers, properties, the price book, jobs,\n` +
-        `  visits, estimates, invoices and payments, and read permission for each of\n` +
-        `  those for reconcile. See docs/loading.md.`,
+        `  An owner installs the app with read and write on customers, properties, the\n` +
+        `  price book, jobs, visits, estimates, invoices, payments and documents, the\n` +
+        `  "all" scope on customers, jobs, estimates and invoices, and data:import,\n` +
+        `  which is what lets it record history. See docs/loading.md.`,
     );
   }
   return token;
@@ -233,9 +234,10 @@ program
   .description("Load into a scratch tenant in memory and report every record that would fail, and why. Touches nothing real.")
   .option("-i, --in <dir>", "snapshot directory", "./snapshot")
   .option("-m, --mapping <file>", "mapping file (default <in>/mapping.json)")
-  .option("--carry-totals", "add lines for tax as applied and unitemised amounts, so invoice totals match the source")
+  .option("--carry-totals", "carry tax the target cannot take on any line in the invoice's adjustment, so its total still matches")
+  .option("--without-import", "act as a token without data:import, to see what it would be refused")
   .option("--json <file>", "also write the full report as JSON")
-  .action(async (options: { in: string; mapping?: string; carryTotals?: boolean; json?: string }) => {
+  .action(async (options: { in: string; mapping?: string; carryTotals?: boolean; withoutImport?: boolean; json?: string }) => {
     const snapshot = await openSnapshot(options.in);
     const adapter = resolve(snapshot.source);
     const path = options.mapping ?? mappingPath(options.in);
@@ -247,7 +249,7 @@ program
     }
     refuseBadMapping(mapping, path);
 
-    const target = new MemoryTarget();
+    const target = new MemoryTarget(options.withoutImport ? { permissions: [] } : {});
     const ledger = Ledger.memory(target.description, snapshot.source, snapshot.info.account ?? "");
     const report = await load({
       snapshot, adapter, target, ledger, mapping, carryTotals: options.carryTotals ?? false, dryRun: true,
@@ -275,11 +277,13 @@ program
   .requiredOption("-t, --target <url>", "the OpenTradesOS deployment, e.g. https://ots.example.com")
   .option("-m, --mapping <file>", "mapping file (default <in>/mapping.json)")
   .option("--ledger <file>", "load ledger (default <in>/load/<host>.ledger.ndjson)")
-  .option("--carry-totals", "add lines for tax as applied and unitemised amounts, so invoice totals match the source")
+  .option("--carry-totals", "carry tax the target cannot take on any line in the invoice's adjustment, so its total still matches")
   .option("--concurrency <n>", "records in flight at once", "4")
+  .option("--rebuild-ledger", "first read back, by externalRef, everything this snapshot already loaded into the target, for a lost or partial ledger")
   .option("--json <file>", "also write the full report as JSON")
   .action(async (options: {
-    in: string; target: string; mapping?: string; ledger?: string; carryTotals?: boolean; concurrency: string; json?: string;
+    in: string; target: string; mapping?: string; ledger?: string; carryTotals?: boolean; concurrency: string;
+    rebuildLedger?: boolean; json?: string;
   }) => {
     const token = targetToken();
     const snapshot = await openSnapshot(options.in);
@@ -307,6 +311,7 @@ program
     const report = await load({
       snapshot, adapter, target, ledger, mapping,
       carryTotals: options.carryTotals ?? false,
+      rebuild: options.rebuildLedger ?? false,
       concurrency: Math.max(1, Number(options.concurrency) || 4),
       onProgress: meter.tick,
     });

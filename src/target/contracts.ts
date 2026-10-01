@@ -47,6 +47,36 @@ const PageInput = {
   limit: z.number().int().min(1).max(200).default(50),
 };
 
+/**
+ * contracts/common.ts RESERVED_SOURCES. The recurring engine tags the jobs it
+ * books with this source, and a caller claiming it would make the engine
+ * think an occurrence was already booked.
+ */
+export const RESERVED_SOURCES = ["recurring_schedule"] as const;
+
+/**
+ * contracts/common.ts ExternalRef. Where a record came from: the source
+ * system and that system's own id. Unique per company per kind of record, so
+ * a second create for the same source record is a 409 naming the id it
+ * already became, and every list can find a record by it.
+ */
+export const ExternalRef = z.object({
+  source: z.string()
+    .regex(/^[a-z0-9][a-z0-9_.-]{0,49}$/, "A source is a lower case name, like jobber or housecall_pro")
+    .refine((v) => !(RESERVED_SOURCES as readonly string[]).includes(v), "That source is written by this product itself"),
+  id: z.string().min(1).max(200),
+});
+export type ExternalRef = z.infer<typeof ExternalRef>;
+
+/** contracts/common.ts ExternalLookup. Both together name one record. */
+const ExternalLookup = {
+  externalSource: z.string().max(50).optional(),
+  externalId: z.string().max(200).optional(),
+};
+
+/** A source document's own number. Needs `data:import`; refused if taken. */
+const DocumentNumber = z.number().int().min(1).max(2_000_000_000);
+
 const page = <T extends z.ZodTypeAny>(item: T) => z.object({
   data: z.array(item),
   nextCursor: z.string().nullable(),
@@ -76,6 +106,7 @@ export const CustomerCreate = z.object({
     address: Address,
     accessNotes: z.string().max(2000).optional(),
   }).optional(),
+  externalRef: ExternalRef.optional(),
 });
 
 // contracts/properties.ts
@@ -95,6 +126,7 @@ export const PropertyCreate = z.object({
   customFields: z.record(z.unknown()).default({}),
   customerId: Uuid.optional(),
   customerRole: PropertyRole.default("owner"),
+  externalRef: ExternalRef.optional(),
 });
 
 /** contracts/properties.ts linkCustomerToProperty (POST /v1/properties/{id}/customers). */
@@ -124,6 +156,7 @@ export const PriceBookItemCreate = z.object({
   taxClass: z.string().max(50).optional(),
   laborMinutes: z.number().int().min(0).max(10000).optional(),
   warrantyMonths: z.number().int().min(0).max(600).optional(),
+  externalRef: ExternalRef.optional(),
 });
 
 /** contracts/pricebook.ts setPriceBookItemActive (POST /v1/pricebook/items/{id}/active). */
@@ -146,6 +179,7 @@ const VisitInput = z.object({
   windowEnd: z.string().datetime(),
   estimatedDurationMinutes: z.number().int().min(5).max(1440).default(60),
   technicianIds: z.array(Uuid).default([]),
+  externalRef: ExternalRef.optional(),
 });
 
 /**
@@ -154,6 +188,8 @@ const VisitInput = z.object({
  * either is not the same request as an absent one.
  */
 export const JobCreate = z.object({
+  number: DocumentNumber.optional(),
+  externalRef: ExternalRef.optional(),
   customerId: Uuid,
   propertyId: Uuid,
   jobTypeId: Uuid.optional(),
@@ -172,16 +208,32 @@ export const JobCreate = z.object({
   visit: VisitInput.optional(),
 });
 
-/** contracts/jobs.ts updateJob (PATCH /v1/jobs/{id}), status only. */
+/**
+ * contracts/jobs.ts updateJob (PATCH /v1/jobs/{id}), status only. A
+ * `completedAt` goes with the move to completed and at no other time, and one
+ * more than a week back needs `data:import`.
+ */
 export const JobUpdate = z.object({
   id: Uuid,
   status: JobStatus.optional(),
+  completedAt: z.string().datetime().optional(),
 });
 
-/** contracts/jobs.ts scheduleVisit (POST /v1/jobs/{id}/visits). */
-export const VisitSchedule = VisitInput.extend({
+/**
+ * contracts/jobs.ts scheduleVisit (POST /v1/jobs/{id}/visits). The window is
+ * both ends or neither (neither is a visit nobody has timed, kept unassigned
+ * and off the board), and `status: "cancelled"` records a visit that was
+ * called off without dispatching anybody. Honours the Idempotency-Key.
+ */
+export const VisitSchedule = z.object({
   id: Uuid,
+  windowStart: z.string().datetime().optional(),
+  windowEnd: z.string().datetime().optional(),
+  estimatedDurationMinutes: z.number().int().min(5).max(1440).default(60),
+  technicianIds: z.array(Uuid).default([]),
   crewId: Uuid.optional(),
+  status: z.literal("cancelled").optional(),
+  externalRef: ExternalRef.optional(),
 });
 
 /** contracts/jobs.ts completeVisit (POST /v1/visits/{id}/complete). */
@@ -230,6 +282,8 @@ export function statusPath(from: JobStatus, to: JobStatus): JobStatus[] | undefi
   return undefined;
 }
 
+const ExternalRefOut = z.object({ source: z.string(), id: z.string() }).nullable().optional();
+
 const VisitOut = z.object({
   id: Uuid,
   sequence: z.number().int(),
@@ -237,6 +291,7 @@ const VisitOut = z.object({
   windowStart: z.string().nullable(),
   windowEnd: z.string().nullable(),
   completedAt: z.string().nullable().optional(),
+  externalRef: ExternalRefOut,
 }).passthrough();
 
 const JobOut = z.object({
@@ -244,7 +299,11 @@ const JobOut = z.object({
   number: z.number().int().optional(),
   status: JobStatus,
   visits: z.array(VisitOut).default([]),
+  externalRef: ExternalRefOut,
 }).passthrough();
+
+/** Any record a list returns, read for its id and where it came from. */
+const Row = z.object({ id: Uuid, externalRef: ExternalRefOut }).passthrough();
 
 // contracts/estimates.ts
 
@@ -257,6 +316,8 @@ const LineInput = z.object({
   unitCost: MoneyString.optional(),
   discountAmount: MoneyString.default("0"),
   taxable: z.boolean().default(true),
+  /** This line's own rate, where it differs from the estimate's. */
+  taxRate: RateString.optional(),
   isOptional: z.boolean().default(false),
   isSelected: z.boolean().default(false),
   costCode: z.string().max(50).optional(),
@@ -264,10 +325,14 @@ const LineInput = z.object({
 
 /** contracts/estimates.ts createEstimate (POST /v1/estimates). */
 export const EstimateCreate = z.object({
+  number: DocumentNumber.optional(),
+  externalRef: ExternalRef.optional(),
   customerId: Uuid,
   propertyId: Uuid,
   jobId: Uuid.optional(),
   title: z.string().max(200).optional(),
+  /** The day it was written. More than a week back needs `data:import`. */
+  issuedOn: z.string().date().optional(),
   expiresOn: z.string().date().optional(),
   taxRate: RateString.default("0"),
   options: z.array(z.object({
@@ -289,12 +354,23 @@ export const EstimateDecline = z.object({
 export const PaymentMethod = z.enum(["card", "card_present", "ach", "cash", "check", "financing", "credit", "other"]);
 export type PaymentMethod = z.infer<typeof PaymentMethod>;
 
-/** contracts/billing.ts createInvoice (POST /v1/invoices). */
+/**
+ * contracts/billing.ts createInvoice (POST /v1/invoices).
+ *
+ * `issuedOn` more than a week back, `number`, and a line's `taxRate`,
+ * `taxAmount` or `priceAsGiven` all need `data:import`. A stated `taxAmount`
+ * must be within a cent of the line's rate on its net. `expectedTotals` is a
+ * cross check: any total that differs from what the lines give, to the cent,
+ * refuses the invoice with a 422 naming the field.
+ */
 export const InvoiceCreate = z.object({
+  number: DocumentNumber.optional(),
+  externalRef: ExternalRef.optional(),
   customerId: Uuid,
   payerCustomerId: Uuid.optional(),
   jobId: Uuid.optional(),
   purchaseOrderNumber: z.string().max(100).optional(),
+  issuedOn: z.string().date().optional(),
   dueOn: z.string().date().optional(),
   memo: z.string().max(2000).optional(),
   lines: z.array(z.object({
@@ -305,8 +381,21 @@ export const InvoiceCreate = z.object({
     unitPrice: MoneyString,
     discountAmount: MoneyString.default("0"),
     taxable: z.boolean().default(true),
+    taxRate: RateString.optional(),
+    taxAmount: MoneyString.optional(),
+    priceAsGiven: z.boolean().optional(),
     costCode: z.string().max(50).optional(),
   })).min(1),
+  adjustment: z.object({
+    name: z.string().min(1).max(200),
+    amount: MoneyString,
+  }).optional(),
+  expectedTotals: z.object({
+    subtotal: MoneyString.optional(),
+    discountTotal: MoneyString.optional(),
+    taxTotal: MoneyString.optional(),
+    total: MoneyString.optional(),
+  }).optional(),
 });
 
 /** contracts/billing.ts voidInvoice and writeOffInvoice. Both demand a reason. */
@@ -315,8 +404,14 @@ export const InvoiceEnd = z.object({
   reason: z.string().min(1).max(500),
 });
 
-/** contracts/billing.ts recordPayment (POST /v1/payments). */
+/**
+ * contracts/billing.ts recordPayment (POST /v1/payments). Omitted
+ * `allocations` applies oldest balance first; an EMPTY list applies nothing,
+ * and whatever is not applied is held for the customer as `unappliedAmount`.
+ * `receivedAt` more than a week back needs `data:import`.
+ */
 export const PaymentRecord = z.object({
+  externalRef: ExternalRef.optional(),
   customerId: Uuid,
   method: PaymentMethod,
   amount: MoneyString,
@@ -334,18 +429,105 @@ const InvoiceOut = z.object({
   id: Uuid,
   number: z.number().int().optional(),
   status: z.string(),
+  issuedOn: z.string().nullable().optional(),
+  taxTotal: MoneyString.optional(),
   total: MoneyString,
   balance: MoneyString,
   amountPaid: MoneyString.optional(),
+  externalRef: ExternalRefOut,
 }).passthrough();
+
+const Allocation = z.object({ invoiceId: Uuid, amount: MoneyString });
 
 const PaymentOut = z.object({
   id: Uuid,
   amount: MoneyString,
-  allocations: z.array(z.object({ invoiceId: Uuid, amount: MoneyString })),
+  allocations: z.array(Allocation),
+  unappliedAmount: MoneyString.optional(),
 }).passthrough();
 
-const EstimateOut = z.object({ id: Uuid, status: z.string() }).passthrough();
+/** contracts/billing.ts Payment, as GET /v1/payments returns it. */
+const PaymentRow = z.object({
+  id: Uuid,
+  customerId: Uuid,
+  method: z.string(),
+  status: z.string(),
+  amount: MoneyString,
+  refundedAmount: MoneyString.optional(),
+  receivedAt: z.string(),
+  allocations: z.array(Allocation),
+  unappliedAmount: MoneyString,
+  externalRef: ExternalRefOut,
+}).passthrough();
+
+const EstimateOut = z.object({ id: Uuid, status: z.string(), externalRef: ExternalRefOut }).passthrough();
+
+/** contracts/billing.ts recordRefund: how money went back outside a processor. */
+export const RefundMethod = z.enum(["cash", "check", "ach", "credit", "other"]);
+export type RefundMethod = z.infer<typeof RefundMethod>;
+
+/** contracts/files.ts AttachableEntity. */
+export const AttachableEntity = z.enum(["customer", "property", "job", "visit", "estimate", "invoice"]);
+export type AttachableEntity = z.infer<typeof AttachableEntity>;
+
+// contracts/people.ts and contracts/jobs.ts: what the target already has
+
+/** contracts/people.ts listPeople (GET /v1/people). */
+const PersonOut = z.object({
+  membershipId: Uuid,
+  userId: Uuid,
+  name: z.string().nullable(),
+  email: z.string(),
+  role: z.string(),
+  active: z.boolean(),
+  technicianId: Uuid.nullable(),
+  displayName: z.string().nullable(),
+  technicianActive: z.boolean().nullable(),
+}).passthrough();
+
+const JobTypeOut = z.object({
+  id: Uuid,
+  name: z.string(),
+  code: z.string().nullable(),
+  active: z.boolean(),
+}).passthrough();
+
+// contracts/recurring.ts
+
+export const RecurrenceModel = z.enum(["rule", "materialized", "anchored_to_completion", "manual"]);
+export type RecurrenceModel = z.infer<typeof RecurrenceModel>;
+
+/**
+ * contracts/recurring.ts createRecurringSchedule (POST /v1/recurring-schedules).
+ * No externalRef and no number: a schedule is found again by what it is.
+ */
+export const RecurringScheduleCreate = z.object({
+  label: z.string().min(1).max(200),
+  customerId: Uuid,
+  propertyId: Uuid,
+  summary: z.string().min(1).max(500),
+  model: RecurrenceModel,
+  startsOn: z.string().date(),
+  endsOn: z.string().date().nullable().optional(),
+  intervalDays: z.number().int().min(1).max(3650).nullable().optional(),
+  anchorMonths: z.array(z.number().int().min(1).max(12)).optional(),
+  jobTypeId: Uuid.nullable().optional(),
+  estimatedDurationMinutes: z.number().int().min(5).max(1440).nullable().optional(),
+  horizonMonths: z.number().int().min(1).max(60).optional(),
+});
+
+const RecurringScheduleOut = z.object({
+  id: Uuid,
+  label: z.string(),
+  customerId: Uuid.nullable(),
+  propertyId: Uuid.nullable(),
+  summary: z.string(),
+  model: RecurrenceModel,
+  startsOn: z.string(),
+  lastOccurredOn: z.string().nullable(),
+  nextDueOn: z.string().nullable(),
+  active: z.boolean(),
+}).passthrough();
 
 /**
  * Every route the toolkit calls. `path` is the contract's own path; the
@@ -355,41 +537,119 @@ export const ROUTES = {
   createCustomer: { method: "POST", path: "/v1/customers", input: CustomerCreate, output: withId },
   listCustomers: {
     method: "GET", path: "/v1/customers",
-    input: z.object({ ...PageInput, includeInactive: z.boolean().default(false) }),
-    output: page(withId),
+    input: z.object({ ...PageInput, includeInactive: z.boolean().default(false), ...ExternalLookup }),
+    output: page(Row),
   },
   createProperty: { method: "POST", path: "/v1/properties", input: PropertyCreate, output: withId },
   linkCustomerToProperty: {
     method: "POST", path: "/v1/properties/{id}/customers", input: PropertyLink,
     output: z.object({ ok: z.literal(true) }).passthrough(),
   },
-  listProperties: { method: "GET", path: "/v1/properties", input: z.object(PageInput), output: page(withId) },
+  listProperties: {
+    method: "GET", path: "/v1/properties", input: z.object({ ...PageInput, ...ExternalLookup }), output: page(Row),
+  },
   createPriceBookItem: { method: "POST", path: "/v1/pricebook/items", input: PriceBookItemCreate, output: withId },
   setPriceBookItemActive: {
     method: "POST", path: "/v1/pricebook/items/{id}/active", input: PriceBookItemActive, output: withId,
   },
   listPriceBook: {
     method: "GET", path: "/v1/pricebook/items",
-    input: z.object({ ...PageInput, includeInactive: z.boolean().default(false) }),
-    output: page(withId),
+    input: z.object({ ...PageInput, includeInactive: z.boolean().default(false), ...ExternalLookup }),
+    output: page(Row),
   },
   createJob: { method: "POST", path: "/v1/jobs", input: JobCreate, output: JobOut },
   getJob: { method: "GET", path: "/v1/jobs/{id}", input: z.object({ id: Uuid }), output: JobOut },
   updateJob: { method: "PATCH", path: "/v1/jobs/{id}", input: JobUpdate, output: JobOut },
   scheduleVisit: { method: "POST", path: "/v1/jobs/{id}/visits", input: VisitSchedule, output: VisitOut },
   completeVisit: { method: "POST", path: "/v1/visits/{id}/complete", input: VisitComplete, output: VisitOut },
-  listJobs: { method: "GET", path: "/v1/jobs", input: z.object(PageInput), output: page(withId) },
+  listJobs: { method: "GET", path: "/v1/jobs", input: z.object({ ...PageInput, ...ExternalLookup }), output: page(Row) },
+  listJobTypes: {
+    method: "GET", path: "/v1/job-types", input: z.object({ includeInactive: z.boolean().default(false) }),
+    output: z.object({ data: z.array(JobTypeOut) }),
+  },
   createEstimate: { method: "POST", path: "/v1/estimates", input: EstimateCreate, output: EstimateOut },
   declineEstimate: { method: "POST", path: "/v1/estimates/{id}/decline", input: EstimateDecline, output: EstimateOut },
   listEstimates: {
-    method: "GET", path: "/v1/estimates", input: z.object(PageInput),
-    output: page(z.object({ id: Uuid, total: MoneyString }).passthrough()),
+    method: "GET", path: "/v1/estimates", input: z.object({ ...PageInput, ...ExternalLookup }),
+    output: page(z.object({ id: Uuid, status: z.string(), total: MoneyString, externalRef: ExternalRefOut }).passthrough()),
   },
   createInvoice: { method: "POST", path: "/v1/invoices", input: InvoiceCreate, output: InvoiceOut },
   voidInvoice: { method: "POST", path: "/v1/invoices/{id}/void", input: InvoiceEnd, output: InvoiceOut },
   writeOffInvoice: { method: "POST", path: "/v1/invoices/{id}/write-off", input: InvoiceEnd, output: InvoiceOut },
-  listInvoices: { method: "GET", path: "/v1/invoices", input: z.object(PageInput), output: page(InvoiceOut) },
+  getInvoice: { method: "GET", path: "/v1/invoices/{id}", input: z.object({ id: Uuid }), output: InvoiceOut },
+  listInvoices: {
+    method: "GET", path: "/v1/invoices", input: z.object({ ...PageInput, ...ExternalLookup }), output: page(InvoiceOut),
+  },
   recordPayment: { method: "POST", path: "/v1/payments", input: PaymentRecord, output: PaymentOut },
+  listPayments: {
+    method: "GET", path: "/v1/payments",
+    input: z.object({
+      ...PageInput,
+      customerId: Uuid.optional(),
+      invoiceId: Uuid.optional(),
+      unappliedOnly: z.boolean().default(false),
+      ...ExternalLookup,
+    }),
+    output: page(PaymentRow),
+  },
+  recordRefund: {
+    method: "POST", path: "/v1/payments/{id}/refunds",
+    input: z.object({
+      id: Uuid,
+      amount: MoneyString,
+      method: RefundMethod,
+      refundedAt: z.string().datetime().optional(),
+      checkNumber: z.string().max(50).optional(),
+      reason: z.string().min(1).max(500),
+    }),
+    output: PaymentRow,
+  },
+  uploadAttachment: {
+    method: "POST", path: "/v1/attachments",
+    input: z.object({
+      entityType: AttachableEntity,
+      entityId: Uuid,
+      fileName: z.string().min(1).max(255),
+      contentType: z.string().max(100).optional(),
+      bytes: z.string().min(4).max(28 * 1024 * 1024),
+      kind: z.enum(["photo", "document", "signature", "other"]).optional(),
+      phase: z.enum(["before", "during", "after"]).optional(),
+    }),
+    output: z.object({ id: Uuid, entityType: AttachableEntity, entityId: Uuid, alreadyHeld: z.boolean() }).passthrough(),
+  },
+  listPeople: {
+    method: "GET", path: "/v1/people", input: z.object({ email: z.string().max(320).optional() }),
+    output: z.object({ people: z.array(PersonOut) }),
+  },
+  createRecurringSchedule: {
+    method: "POST", path: "/v1/recurring-schedules", input: RecurringScheduleCreate,
+    output: z.object({ id: Uuid, label: z.string(), nextDueOn: z.string().nullable() }).passthrough(),
+  },
+  listRecurringSchedules: {
+    method: "GET", path: "/v1/recurring-schedules", input: z.object({}),
+    output: z.object({ schedules: z.array(RecurringScheduleOut) }),
+  },
+  recordRecurringCompletion: {
+    method: "POST", path: "/v1/recurring-schedules/{id}/completed",
+    input: z.object({ id: Uuid, completedOn: z.string().date() }),
+    output: z.object({ id: Uuid, lastOccurredOn: z.string(), nextDueOn: z.string().nullable() }).passthrough(),
+  },
+  exceptRecurringOccurrence: {
+    method: "POST", path: "/v1/recurring-schedules/{id}/exceptions",
+    input: z.object({
+      id: Uuid,
+      date: z.string().date(),
+      action: z.enum(["skipped", "moved", "cancelled"]),
+      movedTo: z.string().date().optional(),
+      reason: z.string().max(500).optional(),
+    }),
+    output: z.object({ id: Uuid }).passthrough(),
+  },
+  setRecurringScheduleActive: {
+    method: "POST", path: "/v1/recurring-schedules/{id}/active",
+    input: z.object({ id: Uuid, active: z.boolean() }),
+    output: z.object({ id: Uuid, active: z.boolean() }).passthrough(),
+  },
 } as const;
 
 export type RouteName = keyof typeof ROUTES;

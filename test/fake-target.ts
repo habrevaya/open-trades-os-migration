@@ -94,10 +94,10 @@ export async function startFakeTarget(memory = new MemoryTarget()): Promise<Fake
         return send(res, 404, { error: `No route for ${url.pathname}`, status: 404 });
       }
 
-      // The core's query coercion, for the two fields the lists use.
+      // The core's query coercion, for the fields the lists use.
       const query: Record<string, unknown> = {};
       for (const [k, v] of url.searchParams) {
-        query[k] = k === "limit" ? Number(v) : k === "includeInactive" ? v === "true" : v;
+        query[k] = k === "limit" ? Number(v) : k === "includeInactive" || k === "unappliedOnly" ? v === "true" : v;
       }
       const input = { ...query, ...(text.trim() === "" ? {} : JSON.parse(text) as Record<string, unknown>), ...found.params };
 

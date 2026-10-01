@@ -150,3 +150,85 @@ export function display(a: string): string {
   const whole = (cents / 100n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return `${negative ? "-" : ""}$${whole}.${(cents % 100n).toString().padStart(2, "0")}`;
 }
+
+/**
+ * RATES
+ *
+ * A tax rate carries up to six places ("0.08875"), more than an amount, so
+ * it cannot go through `parse`. These three are the arithmetic the target
+ * does with one, reproduced exactly so the loader can predict to the cent
+ * what the target will compute before it sends anything: products held at
+ * four places rounded half away from zero, and document totals rounded once
+ * to two.
+ */
+
+const RATE_PATTERN = /^(-)?(\d+)(?:\.(\d+))?$/;
+
+function parseRate(rate: string): { value: bigint; divisor: bigint } {
+  const match = RATE_PATTERN.exec(rate.trim());
+  if (!match) throw new MoneyError(rate, `Not a decimal rate: ${JSON.stringify(rate)}`);
+  const [, sign, whole, fraction = ""] = match;
+  const value = BigInt(`${whole}${fraction}`) * (sign === "-" ? -1n : 1n);
+  return { value, divisor: 10n ** BigInt(fraction.length) };
+}
+
+function divideRounded(numerator: bigint, denominator: bigint): bigint {
+  const negative = (numerator < 0n) !== (denominator < 0n);
+  const n = numerator < 0n ? -numerator : numerator;
+  const d = denominator < 0n ? -denominator : denominator;
+  const quotient = n / d;
+  const rounded = (n % d) * 2n >= d ? quotient + 1n : quotient;
+  return negative ? -rounded : rounded;
+}
+
+/** An amount times a rate, at four places, half away from zero. */
+export function multiplyRate(amount: string, rate: string): string {
+  const r = parseRate(rate);
+  return format(divideRounded(parse(amount) * r.value, r.divisor));
+}
+
+/** `numerator / denominator` as a rate with `places` decimals. */
+export function ratio(numerator: string, denominator: string, places = 6): string {
+  const d = parse(denominator);
+  if (d === 0n) throw new MoneyError(denominator, "Division by zero");
+  const scaled = divideRounded(parse(numerator) * 10n ** BigInt(places), d);
+  const negative = scaled < 0n;
+  const magnitude = (negative ? -scaled : scaled).toString().padStart(places + 1, "0");
+  const whole = magnitude.slice(0, magnitude.length - places);
+  const fraction = magnitude.slice(magnitude.length - places).replace(/0+$/, "");
+  return `${negative ? "-" : ""}${whole}${fraction === "" ? "" : `.${fraction}`}`;
+}
+
+/** Round to `places` (at most four), half away from zero. */
+export function round(amount: string, places = 2): string {
+  if (places >= SCALE) return format(parse(amount));
+  const step = 10n ** BigInt(SCALE - places);
+  return format(divideRounded(parse(amount), step) * step);
+}
+
+/**
+ * Split `total` across `weights` in proportion, at four places, so the parts
+ * add back to exactly `total`. The remainder goes a ten-thousandth at a time
+ * to the parts that lost the most to rounding down.
+ */
+export function apportion(total: string, weights: readonly string[]): string[] {
+  const t = parse(total);
+  const w = weights.map(parse);
+  const whole = w.reduce((a, b) => a + b, 0n);
+  if (whole === 0n) throw new MoneyError(total, "Cannot apportion across weights that sum to zero");
+  const negative = t < 0n;
+  const magnitude = negative ? -t : t;
+  const exact = w.map((x) => magnitude * x);
+  const floors = exact.map((e) => (e >= 0n ? e / whole : -((-e + whole - 1n) / whole)));
+  let left = magnitude - floors.reduce((a, b) => a + b, 0n);
+  const order = exact
+    .map((e, i) => ({ i, remainder: e - floors[i]! * whole }))
+    .sort((a, b) => (a.remainder === b.remainder ? a.i - b.i : a.remainder > b.remainder ? -1 : 1));
+  const parts = [...floors];
+  for (const { i } of order) {
+    if (left <= 0n) break;
+    parts[i]! += 1n;
+    left -= 1n;
+  }
+  return parts.map((p) => format(negative ? -p : p));
+}

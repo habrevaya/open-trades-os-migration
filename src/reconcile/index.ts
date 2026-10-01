@@ -115,7 +115,7 @@ export function renderReconcile(report: ReconcileReport): string {
  * discrepancy by construction.
  */
 export function sourceSide(result: TransformResult): Side {
-  const loaded: EntityName[] = ["customer", "property", "priceBookItem", "job", "estimate", "invoice", "payment"];
+  const loaded: EntityName[] = ["customer", "property", "priceBookItem", "job", "recurringSchedule", "estimate", "invoice", "payment"];
   const counts: Partial<Record<EntityName, number>> = {};
   for (const entity of loaded) {
     const n = result.counts[entity];

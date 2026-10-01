@@ -20,9 +20,10 @@ import { dirname } from "node:path";
  * small and real: the process can die inside it. Every create therefore
  * carries an Idempotency-Key derived from the source record, so the re-run
  * sends the same request and the target hands back what it already made,
- * even if this whole file was lost. Where the target does not honour a key
- * (scheduling a visit), the loader reads back what exists before writing
- * again. See docs/target-api-gaps.md.
+ * and an `externalRef` naming the source record, which the target holds once
+ * per company and answers a repeat of with a 409 naming what it became. Even
+ * if this whole file is lost, `load --rebuild-ledger` reads it back out of
+ * the target by that externalRef.
  *
  * One ledger belongs to one target. Loading the same snapshot into a scratch
  * tenant and then into production must not share ids, because a production
@@ -128,6 +129,21 @@ export class Ledger {
       namespace: createHash("sha256").update(`${source}|${account}`).digest("hex").slice(0, 16),
       createdAt: new Date().toISOString(),
     };
+  }
+
+  /**
+   * The `source` of every externalRef this load sends: the source system
+   * and eight characters of the namespace, `jobber.3fa9c2d1`.
+   *
+   * Not the bare system name, because the target holds a source id once per
+   * company and two exports whose ids overlap (two spreadsheets that both
+   * start at C-1, two companies merging into one tenant) would otherwise
+   * adopt each other's records. The same snapshot account always gives the
+   * same source, so a run with no ledger finds what an earlier one loaded.
+   */
+  get externalSource(): string {
+    const system = this.header.source.toLowerCase().replace(/[^a-z0-9_.-]+/g, "_").replace(/^[^a-z0-9]+/, "").slice(0, 40) || "source";
+    return `${system}.${this.header.namespace.slice(0, 8)}`;
   }
 
   static key(entity: string, sourceId: string): string {

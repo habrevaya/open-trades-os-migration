@@ -30,7 +30,7 @@ import { JobStatus, PaymentMethod, Uuid } from "../target/contracts.js";
  * they worked, and the report says how many visits that touched.
  */
 
-export type VisitAction = "schedule" | "complete" | "skip";
+export type VisitAction = "schedule" | "complete" | "cancel" | "skip";
 export type InvoiceAction = "open" | "void" | "write_off";
 export type EstimateAction = "open" | "decline";
 export type PaymentAction = "load" | "skip";
@@ -83,10 +83,11 @@ export function guessJobStatus(status: string): JobStatus | null {
 export function guessVisitAction(status: string): VisitAction {
   const s = norm(status);
   if (["complete", "completed", "done", "finished", "complete_rated", "complete_unrated"].includes(s)) return "complete";
-  // A cancelled visit cannot be recorded as cancelled (no route does it), and
-  // loading it as scheduled would put a technician in a driveway the
-  // customer already declined. Skipped, and counted on the report.
-  if (["cancelled", "canceled", "user_canceled", "pro_canceled", "no_show", "deleted"].includes(s)) return "skip";
+  // Recorded as cancelled: part of the job's history, and nobody is sent.
+  // The target has one word for a visit that did not go ahead, so a no show
+  // is recorded as cancelled too.
+  if (["cancelled", "canceled", "user_canceled", "pro_canceled", "no_show"].includes(s)) return "cancel";
+  if (s === "deleted") return "skip";
   return "schedule";
 }
 
