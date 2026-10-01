@@ -12,7 +12,7 @@ beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), "xlsx-")); });
 afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
 
 /** A zip, written by hand: one entry stored, the rest deflated. */
-function zip(entries: Record<string, string>): Buffer {
+function zip(entries: Record<string, string>, lie?: { declare: number }): Buffer {
   const locals: Buffer[] = [];
   const centrals: Buffer[] = [];
   let offset = 0;
@@ -28,7 +28,7 @@ function zip(entries: Record<string, string>): Buffer {
     const central = Buffer.alloc(46);
     central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6);
     central.writeUInt16LE(method, 10); central.writeUInt32LE(crc32(raw), 16); central.writeUInt32LE(data.length, 20);
-    central.writeUInt32LE(raw.length, 24); central.writeUInt16LE(nameBuf.length, 28); central.writeUInt32LE(offset, 42);
+    central.writeUInt32LE(lie && i > 0 ? lie.declare : raw.length, 24); central.writeUInt16LE(nameBuf.length, 28); central.writeUInt32LE(offset, 42);
     locals.push(local, nameBuf, data);
     centrals.push(central, nameBuf);
     offset += local.length + nameBuf.length + data.length;
@@ -137,5 +137,23 @@ describe("the column mapping, made forgiving where it is safe to be", () => {
     expect(paymentId({ id: "P1" })).toBe("P1");
     expect(paymentId({ customer_id: "41001", invoice_id: "71001", received_at: "2024-03-14", amount: "344.24", method: "Credit Card" }))
       .toBe("derived:|41001|71001|2024-03-14|344.24|credit card");
+  });
+});
+
+describe("a workbook that lies about its size", () => {
+  it("refuses an entry that inflates past the size its directory declared, without inflating it all", async () => {
+    // 64 MiB of one byte deflates to about 64 KiB: a small bomb, declared as 100 bytes.
+    const bomb = zip({ "[Content_Types].xml": "<Types/>", "xl/workbook.xml": "a".repeat(64 * 1024 * 1024) }, { declare: 100 });
+    expect(bomb.length).toBeLessThan(1024 * 1024);
+    const path = join(dir, "bomb.xlsx");
+    await writeFile(path, bomb);
+    await expect(readWorkbook(path)).rejects.toThrow(/would unpack to more than/);
+  });
+
+  it("refuses an entry whose declared size is beyond any real report", async () => {
+    const huge = zip({ "[Content_Types].xml": "<Types/>", "xl/workbook.xml": "<workbook/>" }, { declare: 0xfffffff0 });
+    const path = join(dir, "huge.xlsx");
+    await writeFile(path, huge);
+    await expect(readWorkbook(path)).rejects.toThrow(/would unpack to more than/);
   });
 });

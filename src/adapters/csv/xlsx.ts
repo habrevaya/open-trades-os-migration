@@ -43,6 +43,21 @@ const SIG_EOCD = 0x06054b50;
 const SIG_CENTRAL = 0x02014b50;
 const SIG_LOCAL = 0x04034b50;
 
+/**
+ * How far one entry, and one workbook, may inflate.
+ *
+ * A workbook is a file someone handed us, and a zip is a promise about sizes
+ * that the bytes do not have to keep: a few kilobytes of deflate can expand to
+ * gigabytes, and inflating it without a ceiling takes the process down with
+ * it (or the machine) before any message can say why. Each entry is inflated
+ * with a hard ceiling of the size its directory declared, and the declared
+ * sizes themselves are capped. 512 MiB per part is above any real report a
+ * spreadsheet program will save, and is also roughly where a JavaScript string
+ * stops being able to hold the XML at all.
+ */
+export const MAX_ENTRY_BYTES = 512 * 1024 * 1024;
+export const MAX_WORKBOOK_BYTES = 1024 * 1024 * 1024;
+
 /** The entries of a zip archive, inflated on demand. */
 function unzip(buf: Buffer, path: string): (name: string) => Buffer | undefined {
   const floor = Math.max(0, buf.length - 65_557);
@@ -62,22 +77,24 @@ function unzip(buf: Buffer, path: string): (name: string) => Buffer | undefined 
     throw new Error(`${path} is a zip64 workbook, which this reader does not open. Save it as CSV UTF-8, or split the report by date range.`);
   }
 
-  const entries = new Map<string, { method: number; flags: number; size: number; local: number }>();
+  const entries = new Map<string, { method: number; flags: number; size: number; unpacked: number; local: number }>();
   let at = offset;
   for (let n = 0; n < count; n += 1) {
     if (buf.readUInt32LE(at) !== SIG_CENTRAL) throw new Error(`${path}: damaged zip directory`);
     const flags = buf.readUInt16LE(at + 8);
     const method = buf.readUInt16LE(at + 10);
     const size = buf.readUInt32LE(at + 20);
+    const unpacked = buf.readUInt32LE(at + 24);
     const nameLength = buf.readUInt16LE(at + 28);
     const extraLength = buf.readUInt16LE(at + 30);
     const commentLength = buf.readUInt16LE(at + 32);
     const local = buf.readUInt32LE(at + 42);
     const name = buf.toString("utf8", at + 46, at + 46 + nameLength);
-    entries.set(name.replace(/\\/g, "/"), { method, flags, size, local });
+    entries.set(name.replace(/\\/g, "/"), { method, flags, size, unpacked, local });
     at += 46 + nameLength + extraLength + commentLength;
   }
 
+  let inflated = 0;
   return (name) => {
     const entry = entries.get(name);
     if (!entry) return undefined;
@@ -85,8 +102,25 @@ function unzip(buf: Buffer, path: string): (name: string) => Buffer | undefined 
     if (buf.readUInt32LE(entry.local) !== SIG_LOCAL) throw new Error(`${path}: damaged zip entry ${name}`);
     const start = entry.local + 30 + buf.readUInt16LE(entry.local + 26) + buf.readUInt16LE(entry.local + 28);
     const data = buf.subarray(start, start + entry.size);
+    const tooLarge = () =>
+      new Error(`${path}: ${name} would unpack to more than a spreadsheet report can hold. Split the report by date range, or save it as CSV.`);
+    if (entry.unpacked > MAX_ENTRY_BYTES || inflated + entry.unpacked > MAX_WORKBOOK_BYTES) throw tooLarge();
+    inflated += entry.unpacked;
     if (entry.method === 0) return data;
-    if (entry.method === 8) return inflateRawSync(data);
+    if (entry.method === 8) {
+      let out: Buffer;
+      try {
+        // The ceiling is what the directory declared. A workbook whose data
+        // inflates past its own declared size is lying about it, which is
+        // exactly what a decompression bomb does, and is refused.
+        out = inflateRawSync(data, { maxOutputLength: Math.max(1, entry.unpacked) });
+      } catch (err) {
+        if (err instanceof RangeError || (err as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE") throw tooLarge();
+        throw new Error(`${path}: damaged zip entry ${name}`);
+      }
+      if (out.length !== entry.unpacked) throw new Error(`${path}: zip entry ${name} is not the size its directory says. The file is damaged; export it again.`);
+      return out;
+    }
     throw new Error(`${path}: entry ${name} uses zip method ${entry.method}, which this reader does not open. Save it as CSV.`);
   };
 }
