@@ -1,4 +1,5 @@
 import * as money from "../../money/index.js";
+import { wallClock } from "../time.js";
 import type {
   CanonicalCustomer, CanonicalProperty, CanonicalJob, CanonicalInvoice, CanonicalPayment,
   CanonicalVisit, CanonicalInvoiceLine, CanonicalUser, CanonicalPriceBookItem,
@@ -30,6 +31,12 @@ export interface CsvSettings {
   cents: boolean;
   /** How to read an all-numeric date like 03/04/2024. US exports are MDY. */
   dateOrder: "MDY" | "DMY";
+  /**
+   * The IANA zone the export's times were written in. With it, a time of day
+   * becomes an instant; without it, it stays the wall-clock time it was.
+   * A date with no time is a calendar day and is never shifted.
+   */
+  timezone?: string;
 }
 
 export const DEFAULT_SETTINGS: CsvSettings = { cents: false, dateOrder: "MDY" };
@@ -91,6 +98,12 @@ const quantity = (value: unknown): string => {
  * so is "3/4" with no year.
  */
 export function date(value: unknown, settings: CsvSettings): string | undefined {
+  const local = localDate(value, settings);
+  if (local === undefined || !settings.timezone || !/T\d{2}:\d{2}(:\d{2})?$/.test(local)) return local;
+  return wallClock(local, settings.timezone);
+}
+
+function localDate(value: unknown, settings: CsvSettings): string | undefined {
   const v = text(value);
   if (v === undefined) return undefined;
   if (/^\d{4}-\d{2}-\d{2}([T ][\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/.test(v)) return v.replace(" ", "T");
@@ -147,17 +160,44 @@ export function toUser(row: Row, settings: CsvSettings): CanonicalUser {
   };
 }
 
+/**
+ * An address written on one line, `123 Main St, Suite 4, Austin, TX 78701`,
+ * as reports that print a "Full Address" column write it.
+ *
+ * Split only when it has the unmistakable US tail, a two-letter state and a
+ * ZIP after the last comma. Anything else is kept whole as the first line,
+ * with city, state and ZIP left empty, which `profile` reports as an
+ * incomplete address rather than this guessing where the city starts.
+ */
+export function splitAddress(value: unknown): { line1?: string; line2?: string; city?: string; state?: string; postalCode?: string } {
+  const v = text(value);
+  if (v === undefined) return {};
+  const parts = v.split(",").map((p) => p.trim()).filter((p) => p !== "");
+  if (parts.length > 0 && /^(usa?|united states( of america)?)$/i.test(parts[parts.length - 1]!)) parts.pop();
+  const tail = parts.length >= 3 ? /^([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$/.exec(parts[parts.length - 1]!) : null;
+  if (!tail) return { line1: v };
+  const city = parts[parts.length - 2]!;
+  const street = parts.slice(0, -2);
+  return {
+    line1: street[0]!,
+    ...(street.length > 1 ? { line2: street.slice(1).join(", ") } : {}),
+    city, state: tail[1]!.toUpperCase(), postalCode: tail[2]!,
+  };
+}
+
 export function toCustomer(row: Row, settings: CsvSettings): CanonicalCustomer {
   const type = (text(row["type"]) ?? "residential").toLowerCase();
   if (type !== "residential" && type !== "commercial") {
     throw new Error(`customer type must be residential or commercial, not ${JSON.stringify(row["type"])}`);
   }
+  // A one-line `billing_address` fills only what the split columns leave empty.
+  const whole = splitAddress(row["billing_address"]);
   const billing = {
-    line1: text(row["billing_line1"]),
-    line2: text(row["billing_line2"]),
-    city: text(row["billing_city"]),
-    state: text(row["billing_state"]),
-    postalCode: text(row["billing_postal_code"]),
+    line1: text(row["billing_line1"]) ?? whole.line1,
+    line2: text(row["billing_line2"]) ?? whole.line2,
+    city: text(row["billing_city"]) ?? whole.city,
+    state: text(row["billing_state"]) ?? whole.state,
+    postalCode: text(row["billing_postal_code"]) ?? whole.postalCode,
     country: text(row["billing_country"]) ?? "US",
   };
   const hasBilling = [billing.line1, billing.line2, billing.city, billing.state, billing.postalCode].some(Boolean);
@@ -180,15 +220,16 @@ export function toCustomer(row: Row, settings: CsvSettings): CanonicalCustomer {
 
 export function toProperty(row: Row, settings: CsvSettings): CanonicalProperty {
   void settings;
+  const whole = splitAddress(row["address"]);
   return {
     ...base(row, "property"),
     customerSourceIds: listOf(row["customer_id"]),
     nickname: text(row["nickname"]),
-    addressLine1: text(row["line1"]) ?? "",
-    addressLine2: text(row["line2"]),
-    city: text(row["city"]) ?? "",
-    state: text(row["state"]) ?? "",
-    postalCode: text(row["postal_code"]) ?? "",
+    addressLine1: text(row["line1"]) ?? whole.line1 ?? "",
+    addressLine2: text(row["line2"]) ?? whole.line2,
+    city: text(row["city"]) ?? whole.city ?? "",
+    state: text(row["state"]) ?? whole.state ?? "",
+    postalCode: text(row["postal_code"]) ?? whole.postalCode ?? "",
     country: text(row["country"]) ?? "US",
     latitude: text(row["latitude"]),
     longitude: text(row["longitude"]),
@@ -198,8 +239,11 @@ export function toProperty(row: Row, settings: CsvSettings): CanonicalProperty {
 }
 
 export function toPriceBookItem(row: Row, settings: CsvSettings): CanonicalPriceBookItem {
-  const kind = (text(row["kind"]) ?? "service").toLowerCase();
+  // A plural is the same kind: a workbook's "Services" sheet holds services.
+  const named = (text(row["kind"]) ?? "service").toLowerCase();
   const kinds = ["service", "material", "equipment", "labor", "fee", "discount"] as const;
+  const kind = !(kinds as readonly string[]).includes(named) && (kinds as readonly string[]).includes(named.replace(/s$/, ""))
+    ? named.replace(/s$/, "") : named;
   if (!(kinds as readonly string[]).includes(kind)) {
     throw new Error(`price book kind must be one of ${kinds.join(", ")}, not ${JSON.stringify(row["kind"])}`);
   }
@@ -268,7 +312,12 @@ export function toJob(row: Row, settings: CsvSettings): CanonicalJob {
 
 function toLine(row: Row, settings: CsvSettings): CanonicalInvoiceLine {
   const qty = quantity(row["quantity"]);
-  const unitPrice = amount(row["unit_price"], settings);
+  // Some reports give only what the line came to ("total price on the
+  // invoice for all quantities"). The unit price is then that total over the
+  // quantity, to four places; the line total stays exactly as reported.
+  const unitPrice = text(row["unit_price"]) === undefined && text(row["line_total"]) !== undefined && !money.isZero(qty)
+    ? money.normalize(money.ratio(amount(row["line_total"], settings), qty, 4))
+    : amount(row["unit_price"], settings);
   return {
     name: text(row["name"]) ?? "Line item",
     description: text(row["description"]),
@@ -313,6 +362,22 @@ export function toInvoice(row: Row, settings: CsvSettings): CanonicalInvoice {
  * went to that invoice, and no `invoice_id` means it went to none: a deposit
  * or an account credit, which is real money and is carried as such.
  */
+/**
+ * A payment's id. `id` when the export has one; otherwise derived from what
+ * the row says about the money, the way equipment ids are: `reference` (a
+ * payment number, when the export carries one), customer, invoice, date,
+ * amount and method. Reports that list each application of a payment to an
+ * invoice as its own row have no payment id at all. Two rows identical in
+ * every one of those columns collide, and `profile` reports the duplicate
+ * rather than this telling them apart.
+ */
+export function paymentId(row: Row): string {
+  const explicit = text(row["id"]);
+  if (explicit) return explicit;
+  const norm = (v: unknown) => (text(v) ?? "").toLowerCase().replace(/\s+/g, " ");
+  return `derived:${[row["reference"], row["customer_id"], row["invoice_id"], row["received_at"], row["amount"], row["method"]].map(norm).join("|")}`;
+}
+
 export function toPayment(row: Row, settings: CsvSettings): CanonicalPayment {
   const amt = amount(row["amount"], settings);
   const joined = Array.isArray(row["allocations"]) ? (row["allocations"] as Row[]) : [];
@@ -323,7 +388,9 @@ export function toPayment(row: Row, settings: CsvSettings): CanonicalPayment {
   const received = date(row["received_at"], settings);
   if (!received) throw new Error("payment row has no received_at");
   return {
-    ...base(row, "payment"),
+    sourceSystem: SOURCE,
+    sourceId: paymentId(row),
+    sourcePayload: row,
     customerSourceId: required(row, "customer_id", "payment"),
     method: text(row["method"]) ?? "unknown",
     status: text(row["status"]) ?? "completed",
@@ -343,8 +410,12 @@ export function toEstimate(row: Row, settings: CsvSettings): CanonicalEstimate {
     byOption.set(option, bucket);
     bucket.push(toLine(line, settings));
   }
-  const total = amount(row["total"], settings);
   const taxTotal = amount(row["tax_total"], settings);
+  // A report that gives the subtotal and no total states the total as the
+  // subtotal plus whatever tax it gives.
+  const total = text(row["total"]) === undefined && text(row["subtotal"]) !== undefined
+    ? money.add(amount(row["subtotal"], settings), taxTotal)
+    : amount(row["total"], settings);
   return {
     ...base(row, "estimate"),
     customerSourceId: required(row, "customer_id", "estimate"),

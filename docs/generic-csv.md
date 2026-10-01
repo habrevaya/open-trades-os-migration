@@ -13,6 +13,16 @@ npx @opentradesos/migrate extract --source csv --from ./exports --out ./snapshot
 Only `customers.csv` is required. Every other file is optional, and an entity
 with no file is simply not in the snapshot.
 
+Any file may be an Excel workbook instead: `customers.xlsx` is read wherever
+`customers.csv` would be. Workbooks are read directly, cell text as stored:
+money as the digits Excel saved (to its own 15 significant digits, so a sum
+stored as `1234.5599999999999` reads as the `1234.56` Excel showed), and a
+date cell as an ISO date. The first row with at least two filled cells is the
+header, so a report title above the table is skipped, and a row whose id is
+empty and that says `Total` or `Grand Total` is the report's total line, not
+a record. Encrypted workbooks, old binary `.xls` files and workbooks over
+4 GB are refused with a message to save them as CSV.
+
 ## Files and columns
 
 Headers are matched by name, in any order. Unknown columns are kept in the
@@ -25,8 +35,8 @@ separated with `;`.
 
 | File | Columns |
 |---|---|
-| `customers.csv` | **id**, **name**, type (`residential` / `commercial`), email, phone, billing_line1, billing_line2, billing_city, billing_state, billing_postal_code, billing_country, lead_source, payment_terms_days, tax_exempt, notes, tags |
-| `properties.csv` | **id**, customer_id (`;` for several), nickname, line1, line2, city, state, postal_code, country, latitude, longitude, access_notes |
+| `customers.csv` | **id**, **name**, type (`residential` / `commercial`), email, phone, billing_line1, billing_line2, billing_city, billing_state, billing_postal_code, billing_country, billing_address (one line), lead_source, payment_terms_days, tax_exempt, notes, tags |
+| `properties.csv` | **id**, customer_id (`;` for several), nickname, line1, line2, city, state, postal_code, country, address (one line), latitude, longitude, access_notes |
 | `users.csv` | **id**, name, email, phone, active, role |
 | `price_book.csv` | **id**, **name**, code, kind (`service` `material` `equipment` `labor` `fee` `discount`), description, price, cost, taxable, duration_minutes, active |
 | `jobs.csv` | **id**, **customer_id**, property_id, number, status, summary, description, job_type, lead_source, total, completed_at; or one visit inline as visit_start, visit_end, technician_ids, visit_status |
@@ -35,7 +45,7 @@ separated with `;`.
 | `estimate_lines.csv` | **estimate_id**, option, name, description, quantity, unit_price, taxable, line_total |
 | `invoices.csv` | **id**, **customer_id**, **balance**, job_id, number, status, issued_on, due_on, subtotal, tax_total, total |
 | `invoice_lines.csv` | **invoice_id**, name, description, quantity, unit_price, taxable, tax_rate, tax_amount, line_total, price_book_item_id |
-| `payments.csv` | **id**, **customer_id**, **amount**, **received_at**, method, status, invoice_id |
+| `payments.csv` | id, **customer_id**, **amount**, **received_at**, method, status, invoice_id, reference |
 | `payment_allocations.csv` | **payment_id**, **invoice_id**, **amount** |
 | `attachments.csv` | **id**, **entity_type** (`customer` `property` `job` `visit` `estimate` `invoice` `equipment`), **entity_id**, url or path, file_name, content_type |
 | `contacts.csv` | **id**, **customer_id**, property_id, name (or first_name and last_name), first_name, last_name, email, phone, mobile, role, primary, active, notes |
@@ -57,6 +67,22 @@ invoice in full. A payment with neither is unapplied money (a deposit or a
 credit), which is carried and reported, never dropped.
 
 An attachment `path` is relative to the export directory.
+
+A few columns can stand in for others, for exports that only have the one:
+
+- `billing_address` / `address`: a whole address on one line. It is split
+  only when it ends in a two-letter state and a ZIP after the last comma
+  (`900 Congress Ave, Suite 400, Austin, TX 78701`); anything else is kept
+  whole as the first line, and `profile` reports the address as incomplete.
+  Split columns, where present, win.
+- An invoice or estimate line with `line_total` and no `unit_price` gets the
+  line total over the quantity, to four places, as its unit price. The line
+  total stays exactly as exported.
+- An estimate with `subtotal` and no `total` totals the subtotal plus
+  `tax_total`.
+- A payment with no `id` gets one derived from `reference`, customer,
+  invoice, date, amount and method. Two rows identical in all of those
+  collide, and `profile` reports the duplicate.
 
 ### Equipment
 
@@ -128,9 +154,29 @@ Keys under `files` are the file names above without `.csv`. Under `columns`,
 the documented name is on the left and the export's header on the right. The
 same export file may be named for two entities and the same header may feed
 two columns, which is how a customer list carrying a service address becomes
-both customers and properties. `fixtures/csv/mapped` is a working example,
-and the FieldEdge source ([fieldedge.md](fieldedge.md)) is this same adapter
-with a columns.json built in.
+both customers and properties.
+
+- A header is matched exactly first, then ignoring case and spacing.
+- The right-hand side may be a list, `["Customer Type", "Type"]`: the first
+  header present in the file wins. An empty string maps nothing, which is
+  how an override switches off a preset's column.
+- `file` may contain `*` for a report exported in pieces:
+  `"file": "Invoices*.xlsx"` reads `Invoices 2019.xlsx`, `Invoices 2020.csv`
+  and so on, in name order. Where the same name is there as both .xlsx and
+  .csv, only the workbook is read.
+- `sheet` picks a workbook's sheet by name (the first sheet otherwise), or
+  lists several to read one after the other; each row then carries its
+  sheet's name as `_sheet`, which can be mapped like any header
+  (`"kind": "_sheet"` for a price book with a sheet per kind).
+- `defaults` gives a documented column a value for every row that leaves it
+  empty: `"defaults": { "model": "materialized-series" }`.
+- `timezone` (or `--timezone` on `extract`, which wins) is the IANA zone the
+  export's times are written in, such as `America/Chicago`. With it, a date
+  and time becomes an instant, daylight saving included; without it, it stays
+  the wall-clock time it was. A date with no time is never shifted. `fixtures/csv/mapped` is a working example,
+and the FieldEdge and ServiceTitan sources ([fieldedge.md](fieldedge.md),
+[servicetitan.md](servicetitan.md)) are this same adapter with a
+columns.json built in.
 
 The settings are stamped onto every row in the snapshot, so `profile`,
 `dryrun` and `load` read amounts the same way `extract` did, without needing

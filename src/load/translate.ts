@@ -583,8 +583,27 @@ export function estimateRequest(e: CanonicalEstimate, resolve: Resolve, options:
     if (!jobId) return { blocked: `job ${e.jobSourceId} is not in the target`, warnings, gaps };
   }
 
-  const sourceOptions = e.options.filter((o) => o.lines.length > 0);
-  if (sourceOptions.length === 0) return { invalid: "the estimate has no line items, and the target requires at least one", warnings, gaps };
+  let sourceOptions = e.options.filter((o) => o.lines.length > 0);
+  if (sourceOptions.length === 0) {
+    // As for an invoice: the target requires a line, and an estimate report
+    // that lists estimates without their items (FieldEdge's, ServiceTitan's)
+    // still states what was quoted. One line that names itself for what it
+    // is and carries the source's own subtotal is the record, not an invention.
+    if (money.isZero(e.subtotal) && money.isZero(e.total)) {
+      return { invalid: "the estimate has no line items and no amount, and the target requires at least one line", warnings, gaps };
+    }
+    const label = `${e.sourceSystem}${e.number === undefined ? "" : ` estimate #${e.number}`}`;
+    warnings.push("the source estimate has no line items; loaded as one line carrying its subtotal");
+    const subtotal = money.isZero(e.subtotal) ? money.subtract(e.total, e.taxTotal) : e.subtotal;
+    sourceOptions = [{
+      name: e.options[0]?.name ?? "Estimate",
+      isRecommended: true,
+      lines: [{
+        name: `Migrated from ${label}`, quantity: "1.0000", unitPrice: money.normalize(subtotal),
+        taxable: !money.isZero(e.taxTotal), taxRate: "0", taxAmount: "0", lineTotal: money.normalize(subtotal),
+      }],
+    }];
+  }
   if (sourceOptions.length > 5) return { invalid: `the estimate has ${sourceOptions.length} options and the target takes at most 5`, warnings, gaps };
 
   const action = mapping.estimateStatus[norm(e.status)] ?? guessEstimateAction(e.status);

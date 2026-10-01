@@ -128,6 +128,9 @@ export class Profiler {
   private readonly customerIds = new Set<string>();
   private readonly propertyIds = new Set<string>();
   private readonly invoiceIds = new Set<string>();
+  private readonly jobIds = new Set<string>();
+  /** What each invoice says was paid on it: its total less its balance. */
+  private readonly invoicePaid = new Map<string, string>();
 
   private invoiceTotal = "0";
   private invoiceBalance = "0";
@@ -148,6 +151,13 @@ export class Profiler {
   private readonly orphanScheduleCustomer: string[] = [];
   private readonly scheduleNoAnchor: string[] = [];
   private readonly scheduleNoNext: string[] = [];
+  /**
+   * Every reference from one record to another that is not a job's: the
+   * joins an export made across files. Where the source is a set of reports
+   * joined on their ids, one of these is the only sign that two reports were
+   * run over different ranges, or that a column holds a number, not an id.
+   */
+  private readonly joins = new Map<string, { count: number; sample: string[] }>();
 
   private counts = {
     orphanJobCustomer: 0, orphanJobProperty: 0, orphanPaymentInvoice: 0,
@@ -211,6 +221,7 @@ export class Profiler {
   }
 
   private observeJob(id: string, rec: Record<string, unknown>): void {
+    this.jobIds.add(id);
     const visits = Array.isArray(rec["visits"]) ? rec["visits"] : [];
     if (visits.length === 0) {
       this.counts.jobNoVisits += 1;
@@ -222,6 +233,7 @@ export class Profiler {
     this.invoiceIds.add(id);
     const total = String(rec["total"] ?? "0");
     const balance = String(rec["balance"] ?? "0");
+    this.invoicePaid.set(id, money.subtract(total, balance));
     this.invoiceTotal = money.add(this.invoiceTotal, total);
     this.invoiceBalance = money.add(this.invoiceBalance, balance);
 
@@ -297,11 +309,25 @@ export class Profiler {
   }
 
   private readonly deferredJobs: { id: string; customer: string; property: string }[] = [];
-  private readonly deferredAllocations: { id: string; invoice: string }[] = [];
+  private readonly deferredAllocations: { id: string; invoice: string; amount: string }[] = [];
   private readonly deferredRefs: { kind: "equipment" | "contact" | "schedule"; id: string; ref: string }[] = [];
+  private paymentMismatch = { count: 0, sample: [] as string[] };
+  private readonly deferredJoins: { code: string; id: string; ref: string; kind: "customer" | "job" }[] = [];
 
   /** Called by the caller's second pass; see `profile()`. */
   defer(entity: EntityName, canonical: Record<string, unknown>): void {
+    const id = String(canonical["sourceId"] ?? "");
+    const ref = (field: string) => String(canonical[field] ?? "");
+    if (entity === "property") {
+      const owners = Array.isArray(canonical["customerSourceIds"]) ? (canonical["customerSourceIds"] as unknown[]) : [];
+      for (const owner of owners) this.deferredJoins.push({ code: "property.orphan_customer", id, ref: String(owner), kind: "customer" });
+    }
+    if (entity === "invoice" || entity === "estimate" || entity === "payment") {
+      this.deferredJoins.push({ code: `${entity}.orphan_customer`, id, ref: ref("customerSourceId"), kind: "customer" });
+    }
+    if (entity === "invoice" || entity === "estimate") {
+      this.deferredJoins.push({ code: `${entity}.orphan_job`, id, ref: ref("jobSourceId"), kind: "job" });
+    }
     if (entity === "job") {
       this.deferredJobs.push({
         id: String(canonical["sourceId"] ?? ""),
@@ -324,6 +350,7 @@ export class Profiler {
         this.deferredAllocations.push({
           id: String(canonical["sourceId"] ?? ""),
           invoice: String(a["invoiceSourceId"] ?? ""),
+          amount: String(a["amount"] ?? "0"),
         });
       }
     }
@@ -331,11 +358,39 @@ export class Profiler {
 
   report(source: string, account?: string): ProfileReport {
     this.linkCheck(this.deferredJobs);
+    // Payments applied to each invoice, against what the invoice says was
+    // paid on it. Checked only for invoices that have payments in the
+    // snapshot: an invoice with none may simply have been paid by a payment
+    // the export did not include, and the unallocated count covers that.
+    const applied = new Map<string, string>();
+    for (const allocation of this.deferredAllocations) {
+      if (!this.invoiceIds.has(allocation.invoice)) continue;
+      applied.set(allocation.invoice, money.add(applied.get(allocation.invoice) ?? "0", allocation.amount));
+    }
+    const mismatched: string[] = [];
+    let mismatchCount = 0;
+    for (const [invoice, sum] of applied) {
+      if (!money.equals(sum, this.invoicePaid.get(invoice) ?? "0")) {
+        mismatchCount += 1;
+        this.sample(mismatched, invoice);
+      }
+    }
+    this.paymentMismatch = { count: mismatchCount, sample: mismatched };
     for (const allocation of this.deferredAllocations) {
       if (allocation.invoice !== "" && !this.invoiceIds.has(allocation.invoice)) {
         this.counts.orphanPaymentInvoice += 1;
         if (this.orphanPaymentInvoice.length < SAMPLE_CAP) this.orphanPaymentInvoice.push(allocation.id);
       }
+    }
+
+    for (const join of this.deferredJoins) {
+      if (join.ref === "") continue;
+      const known = join.kind === "customer" ? this.customerIds : this.jobIds;
+      if (known.has(join.ref)) continue;
+      const bucket = this.joins.get(join.code) ?? { count: 0, sample: [] };
+      this.joins.set(join.code, bucket);
+      bucket.count += 1;
+      this.sample(bucket.sample, join.id);
     }
 
     for (const ref of this.deferredRefs) {
@@ -380,6 +435,24 @@ export class Profiler {
       `${this.counts.orphanPaymentInvoice} payment(s) are allocated to an invoice that is not in the snapshot. Receivables will not reconcile.`);
     add("error", "recurringSchedule.orphan_customer", this.counts.orphanScheduleCustomer, this.orphanScheduleCustomer,
       `${this.counts.orphanScheduleCustomer} recurring schedule(s) name a customer that is not in the snapshot. A maintenance visit nobody can be sent to is a missed visit.`);
+    const join = (severity: Severity, code: string, message: (n: number) => string) => {
+      const bucket = this.joins.get(code);
+      if (bucket) add(severity, code, bucket.count, bucket.sample, message(bucket.count));
+    };
+    join("error", "invoice.orphan_customer", (n) =>
+      `${n} invoice(s) name a customer that is not in the snapshot. They cannot load, and their balances will not reconcile.`);
+    join("error", "payment.orphan_customer", (n) =>
+      `${n} payment(s) name a customer that is not in the snapshot. That money would have nowhere to land.`);
+    join("warning", "invoice.orphan_job", (n) =>
+      `${n} invoice(s) name a job that is not in the snapshot. Each waits on that job at load. Usually the job export covers a shorter range than the invoice export.`);
+    join("warning", "property.orphan_customer", (n) =>
+      `${n} property record(s) name a customer that is not in the snapshot.`);
+    join("warning", "estimate.orphan_customer", (n) =>
+      `${n} estimate(s) name a customer that is not in the snapshot.`);
+    join("warning", "estimate.orphan_job", (n) =>
+      `${n} estimate(s) name a job that is not in the snapshot.`);
+    add("warning", "invoice.payments_do_not_match_balance", this.paymentMismatch.count, this.paymentMismatch.sample,
+      `${this.paymentMismatch.count} invoice(s) have payments applied that do not add up to their total less their balance. A payment export covering a different range from the invoice export does this, and so does a payment amount that is the whole payment rather than the part applied to that invoice.`);
     add("warning", "equipment.orphan_property", this.counts.orphanEquipmentProperty, this.orphanEquipmentProperty,
       `${this.counts.orphanEquipmentProperty} piece(s) of equipment name a property that is not in the snapshot. The serial and warranty would have nowhere to live.`);
     add("warning", "contact.orphan_customer", this.counts.orphanContactCustomer, this.orphanContactCustomer,
