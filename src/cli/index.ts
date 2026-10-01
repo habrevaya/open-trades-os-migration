@@ -11,7 +11,7 @@ import { buildMapping, check, mappingPath, readMapping, writeMapping, emptyMappi
 import { load, renderLoad, failures } from "../load/index.js";
 import { Ledger, defaultLedgerPath } from "../load/ledger.js";
 import { HttpTarget, apiBase } from "../target/client.js";
-import { MemoryTarget } from "../target/memory.js";
+import { MemoryTarget, withoutPermissions } from "../target/memory.js";
 import { readTarget } from "../target/read.js";
 import { fetchAttachments, uploadAttachments } from "../attachments/index.js";
 import { defaultRetry } from "../adapters/http.js";
@@ -99,7 +99,8 @@ function targetToken(): string {
         `  An owner installs the app with read and write on customers, properties, the\n` +
         `  price book, jobs, visits, estimates, invoices, payments and documents, the\n` +
         `  "all" scope on customers, jobs, estimates and invoices, and data:import,\n` +
-        `  which is what lets it record history. See docs/loading.md.`,
+        `  which is what lets it record history. load reads GET /v1/apps/me first and\n` +
+        `  names anything missing before it writes. See docs/loading.md.`,
     );
   }
   return token;
@@ -264,7 +265,7 @@ program
     }
     refuseBadMapping(mapping, path);
 
-    const target = new MemoryTarget(options.withoutImport ? { permissions: [] } : {});
+    const target = new MemoryTarget(options.withoutImport ? { permissions: withoutPermissions("data:import") } : {});
     const ledger = Ledger.memory(target.description, snapshot.source, snapshot.info.account ?? "");
     const report = await load({
       snapshot, adapter, target, ledger, mapping, carryTotals: options.carryTotals ?? false, dryRun: true,
@@ -329,6 +330,9 @@ program
       rebuild: options.rebuildLedger ?? false,
       concurrency: Math.max(1, Number(options.concurrency) || 4),
       onProgress: meter.tick,
+      onPreflight: (app) => {
+        process.stdout.write(`  As ${app.name}${app.publisher ? ` (${app.publisher})` : ""}, in organization ${app.organizationId}\n`);
+      },
     });
     meter.finish();
     process.stdout.write("\n");

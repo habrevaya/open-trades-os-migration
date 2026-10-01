@@ -13,7 +13,7 @@ import { transform, CountingSink } from "../src/transform/index.js";
 import { buildMapping, type Mapping } from "../src/mapping/index.js";
 import { load, failures } from "../src/load/index.js";
 import { Ledger } from "../src/load/ledger.js";
-import { MemoryTarget } from "../src/target/memory.js";
+import { MemoryTarget, withoutPermissions } from "../src/target/memory.js";
 import { TargetError, type Target } from "../src/target/client.js";
 import { readTarget } from "../src/target/read.js";
 import { reconcile, sourceSide } from "../src/reconcile/index.js";
@@ -245,33 +245,37 @@ describe("a migrated company keeps its history", () => {
 describe("the import permission", () => {
   it("stops before the first write when the token may not record history, and says what to do", async () => {
     const snapshot = await jobberSnapshot();
-    const memory = new MemoryTarget({ permissions: [] });
+    const memory = new MemoryTarget({ permissions: withoutPermissions("data:import") });
     const report = await load({ snapshot, adapter: jobber, target: memory, ledger: Ledger.memory("t", "jobber"), mapping: await mappingFor(snapshot, jobber) });
-    expect(report.aborted).toMatch(/Missing permission: data:import.*only an owner can give the app/);
+    expect(report.aborted).toMatch(/missing permission: data:import\..*only an owner can give it/);
     expect(memory.customers.size).toBe(0);
     expect(memory.invoices.size).toBe(0);
+    expect([...memory.calls.keys()]).toEqual(["getAppSelf"]);
   });
 
-  it("asks once per ledger, and a token that loses it mid-migration is stopped by name", async () => {
+  it("asks by reading, every run, and a token that loses it mid-migration is stopped by name", async () => {
     const snapshot = await jobberSnapshot();
     const mapping = await mappingFor(snapshot, jobber);
     const ledger = Ledger.memory("t", "jobber");
     const memory = new MemoryTarget();
+    const first = await load({ snapshot, adapter: jobber, target: memory, ledger, mapping });
+    // No probe: every invoice created is one the snapshot holds.
+    expect(memory.calls.get("createInvoice")).toBe(first.entities.invoice?.created);
+    expect(memory.invoices.size).toBe(first.entities.invoice?.created);
     await load({ snapshot, adapter: jobber, target: memory, ledger, mapping });
-    const probes = memory.calls.get("createInvoice");
-    await load({ snapshot, adapter: jobber, target: memory, ledger, mapping });
-    expect(memory.calls.get("createInvoice")).toBe(probes);
+    expect(memory.calls.get("getAppSelf")).toBe(2);
 
     // Skip the check on a fresh ledger, against a token without it: the
     // first historical write is refused and the run stops, naming why.
     const refused = await load({
-      snapshot, adapter: jobber, target: new MemoryTarget({ permissions: [] }), ledger: Ledger.memory("u", "jobber"), mapping, preflight: false,
+      snapshot, adapter: jobber, target: new MemoryTarget({ permissions: withoutPermissions("data:import") }),
+      ledger: Ledger.memory("u", "jobber"), mapping, preflight: false,
     });
     expect(refused.aborted).toContain("data:import");
   });
 
   it("is the target's rule: a week back is ordinary, older is history, the future and a closed period are refused", async () => {
-    const memory = new MemoryTarget({ today, permissions: [], closedThrough: "2025-03-31" });
+    const memory = new MemoryTarget({ today, permissions: withoutPermissions("data:import"), closedThrough: "2025-03-31" });
     const customer = await memory.call("createCustomer", { name: "A" });
     const pay = (receivedAt: string) => memory.call("recordPayment", { customerId: customer.id, method: "cash", amount: "1", receivedAt, allocations: [] });
     await expect(pay("2025-05-28T12:00:00Z")).resolves.toMatchObject({ unappliedAmount: "1.0000" });
@@ -306,8 +310,8 @@ describe("finding what was loaded, by where it came from", () => {
 
     expect(report.rebuilt).toMatchObject({ customer: 3, property: 2, priceBookItem: 2, job: 1, estimate: 2, invoice: 2, payment: 2 });
     expect(fingerprint(memory)).toEqual(before);
-    // The permission check is asked again of a new ledger; nothing else is written.
-    expect(writes() - written).toBe(1);
+    // Asking what the token may do is a read; nothing is written.
+    expect(writes() - written).toBe(0);
     expect(report.entities.customer).toMatchObject({ created: 0, already: 3 });
     // Visits are found again on their job, by externalRef.
     const job = [...memory.jobs.values()][0]!;
@@ -330,19 +334,12 @@ describe("finding what was loaded, by where it came from", () => {
     expect(report.entities.payment).toMatchObject({ created: 0, already: 2 });
   });
 
-  it("stops when the token cannot see what it made, which is a scope narrower than all", async () => {
+  it("stops before the first write when the token could not see what it made, which is a scope narrower than all", async () => {
     const snapshot = await jobberSnapshot();
-    const memory = new MemoryTarget();
-    const scoped: Target = {
-      description: "scoped",
-      async call(name, input, options) {
-        const result = await memory.call(name, input, options);
-        return name === "listCustomers" ? { ...result, data: [], hasMore: false, nextCursor: null } as typeof result : result;
-      },
-    };
-    const report = await load({ snapshot, adapter: jobber, target: scoped, mapping: await mappingFor(snapshot, jobber), ledger: Ledger.memory("t", "jobber"), concurrency: 1 });
-    expect(report.aborted).toMatch(/narrower than "all"/);
-    expect(memory.customers.size).toBe(1);
+    const memory = new MemoryTarget({ scopes: { customer: "own", invoice: "crew" } });
+    const report = await load({ snapshot, adapter: jobber, target: memory, mapping: await mappingFor(snapshot, jobber), ledger: Ledger.memory("t", "jobber"), concurrency: 1 });
+    expect(report.aborted).toMatch(/scope narrower than "all" on: customer \(own\), invoice \(crew\)/);
+    expect(memory.customers.size).toBe(0);
   });
 
   it("names the source every record is sent under, stable for an account", () => {

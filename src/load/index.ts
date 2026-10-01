@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { EntityName } from "../canonical/index.js";
 import type {
   CanonicalCustomer, CanonicalProperty, CanonicalPriceBookItem, CanonicalJob,
@@ -9,8 +8,11 @@ import type { Snapshot } from "../snapshot/index.js";
 import { canonicalRecords } from "../transform/index.js";
 import type { Mapping } from "../mapping/index.js";
 import * as money from "../money/index.js";
-import { statusPath, validate, Uuid, type JobStatus, type RouteName, type InputOf, type OutputOf } from "../target/contracts.js";
-import { TargetError, pages, type Paged, type Target } from "../target/client.js";
+import {
+  statusPath, validate, routePermissions, Uuid,
+  type AppSelf, type JobStatus, type RouteName, type InputOf, type OutputOf,
+} from "../target/contracts.js";
+import { TargetError, pages, type Target } from "../target/client.js";
 import { Ledger } from "./ledger.js";
 import { GAPS, type GapCode } from "./gaps.js";
 import {
@@ -54,10 +56,12 @@ import {
  * loader adopts it. A lost ledger is rebuilt from the target with
  * `rebuild: true` (`load --rebuild-ledger`).
  *
- * Before the first write into a target the loader checks that the token may
- * record history (`data:import`), with a request the target refuses either
- * way and stores nothing from, so a token without it fails at once and says
- * why, rather than a thousand records in.
+ * Before the first write the loader reads what its token may do
+ * (`GET /v1/apps/me`) and stops, naming everything missing at once, unless
+ * the token holds `data:import`, every permission this snapshot's load will
+ * use, and the `all` scope on the records it will have to find again. It
+ * also refuses to resume a ledger written for a different company. Nothing
+ * is written to find any of this out.
  *
  * `dryrun` runs exactly this against an in-memory target, which is the only
  * way a dry run can promise anything about the real one.
@@ -90,6 +94,8 @@ export interface LoadReport {
   problems: Problem[];
   warnings: { entity: string; sourceId: string; message: string }[];
   gaps: Partial<Record<GapCode, { count: number; sample: string[] }>>;
+  /** The app the token belongs to, as the target described it before the first write. */
+  app?: { appId: string; name: string; publisher: string | null; organizationId: string };
   /** Ledger entries read back out of the target, per entity, when rebuilding. */
   rebuilt?: Record<string, number>;
   /** Set when the run stopped early. Re-running resumes from the ledger. */
@@ -106,8 +112,10 @@ export interface LoadInput {
   dryRun?: boolean;
   /** Read what this migration already loaded back out of the target first. */
   rebuild?: boolean;
-  /** Check the token may record history before the first write. Default on. */
+  /** Read what the token may do before the first write, and stop if it is short. Default on. */
   preflight?: boolean;
+  /** Told who the token belongs to, once the preflight has passed and before anything is written. */
+  onPreflight?: (app: AppSelf) => void;
   /** Records in flight at once within one entity. Entities never overlap. */
   concurrency?: number;
   /** The target's today, for dates it would refuse as the future. */
@@ -233,10 +241,12 @@ const FINDABLE: { entity: string; route: RouteName; extra?: Record<string, unkno
  * a decline, a retirement). Visits are read back per job when the job is
  * reached, and every other step is safe to repeat.
  */
-export async function rebuildLedger(target: Target, ledger: Ledger): Promise<Record<string, number>> {
+export async function rebuildLedger(target: Target, ledger: Ledger, uses?: readonly PlanItem[]): Promise<Record<string, number>> {
   const source = ledger.externalSource;
   const counts: Record<string, number> = {};
-  for (const list of FINDABLE) {
+  // Only what this snapshot loads: a list the token was never granted is
+  // not a list this migration made anything in.
+  for (const list of FINDABLE.filter((l) => !uses || uses.includes(l.entity as PlanItem))) {
     let n = 0;
     for await (const row of pages(target, list.route, { ...list.extra, externalSource: source })) {
       const ref = row["externalRef"] as { source?: string; id?: string } | null | undefined;
@@ -304,33 +314,6 @@ export async function load(input: LoadInput): Promise<LoadReport> {
     }
   };
 
-  /**
-   * A token whose scope on a kind of record is narrower than `all` sees only
-   * some of them, and an app's own creations are not among them, so every
-   * list (rebuild, reconcile) would come back empty. Checked once per kind
-   * per run, on the first record made, by finding it again.
-   */
-  const VISIBLE: Partial<Record<string, RouteName>> = {
-    customer: "listCustomers", job: "listJobs", estimate: "listEstimates", invoice: "listInvoices",
-  };
-  const seenVisible = new Map<string, Promise<void>>();
-  const visible = (entity: string, sourceId: string): Promise<void> => {
-    const route = VISIBLE[entity];
-    if (!route || seenVisible.has(entity)) return seenVisible.get(entity) ?? Promise.resolve();
-    const check = (async () => {
-      const page = await call(route, { limit: 1, externalSource, externalId: sourceId, ...(entity === "customer" ? { includeInactive: true } : {}) } as InputOf<typeof route>) as unknown as Paged;
-      if (page.data.length === 0) {
-        throw new LoadStopped(
-          `The target made ${entity} ${sourceId} and will not list it back to this token. Its scope on ${entity}s is narrower than "all", ` +
-            "so nothing this migration loads can be found again or reconciled. Give the app the all scope on customers, jobs, estimates " +
-            "and invoices (docs/loading.md), then run load again.",
-        );
-      }
-    })();
-    seenVisible.set(entity, check);
-    return check;
-  };
-
   /** Local validation first: a request the target would refuse is never sent. */
   const checked = <N extends RouteName>(entity: LoadEntity, sourceId: string, name: N, body: InputOf<N>): boolean => {
     const result = validate(name, body);
@@ -372,7 +355,6 @@ export async function load(input: LoadInput): Promise<LoadReport> {
       const made = await create("createCustomer", t.body, key);
       await ledger.record({ key, target: made.id });
       recorder.count("customer", made.output ? "created" : "already");
-      await visible("customer", c.sourceId);
     },
 
     async contact(record) {
@@ -452,7 +434,6 @@ export async function load(input: LoadInput): Promise<LoadReport> {
         // An idempotent replay or an adopted job is not fresh: its later
         // visits may already exist.
         fresh = made.output !== undefined && made.output.visits.length <= (first ? 1 : 0);
-        await visible("job", job.sourceId);
       }
       const plan = t.plan;
       if (!plan) return;
@@ -576,7 +557,6 @@ export async function load(input: LoadInput): Promise<LoadReport> {
         id = made.id;
         await ledger.record({ key, target: id });
         recorder.count("estimate", made.output ? "created" : "already");
-        await visible("estimate", e.sourceId);
       }
       if (t.decline && !ledger.has(`${key}#decline`)) {
         await call("declineEstimate", { id, reason: `Declined in ${e.sourceSystem}` });
@@ -596,7 +576,6 @@ export async function load(input: LoadInput): Promise<LoadReport> {
         id = made.id;
         await ledger.record({ key, target: id, ...(made.output ? { amount: made.output.total } : {}) });
         recorder.count("invoice", made.output ? "created" : "already");
-        await visible("invoice", i.sourceId);
       }
       // Void before any payment can land on it: the target refuses to void
       // an invoice that has been paid against.
@@ -637,8 +616,13 @@ export async function load(input: LoadInput): Promise<LoadReport> {
   };
 
   try {
-    if (input.rebuild) recorder.report.rebuilt = await rebuildLedger(target, ledger);
-    if (input.preflight !== false) await preflight(target, ledger, input.now);
+    const plan = await planLoad(snapshot, adapter);
+    if (input.preflight !== false) {
+      const app = await preflight(target, ledger, plan);
+      recorder.report.app = { appId: app.appId, name: app.name, publisher: app.publisher, organizationId: app.organizationId };
+      input.onPreflight?.(app);
+    }
+    if (input.rebuild) recorder.report.rebuilt = await rebuildLedger(target, ledger, plan.uses);
 
     for (const entity of LOAD_ORDER) {
       let processed = 0;
@@ -715,41 +699,168 @@ export async function load(input: LoadInput): Promise<LoadReport> {
   return recorder.report;
 }
 
-const PREFLIGHT = "preflight:data-import";
+/**
+ * WHAT THIS LOAD WILL DO, BEFORE IT DOES IT
+ *
+ * The kinds of record the snapshot holds, read from the snapshot rather
+ * than from the adapter's capabilities: a Jobber account with no price book
+ * should not be refused for a token that may not write one. `visit` and
+ * `refund` are their own items because they need permissions of their own
+ * (`visit:write` and `job:complete`, `payment:refund`) and many accounts
+ * have neither. `attachment` is uploaded by the `attachments` command with
+ * the same token, after load, and is asked for here so that the token is
+ * found short once, before anything is written, rather than after.
+ */
+export type PlanItem =
+  | "customer" | "property" | "priceBookItem" | "job" | "visit" | "recurringSchedule"
+  | "estimate" | "invoice" | "payment" | "refund" | "attachment";
+
+export interface LoadPlan {
+  uses: PlanItem[];
+}
+
+/** The routes each kind of record is loaded, finished, rebuilt and reconciled through. */
+const ROUTES_FOR: Record<PlanItem, RouteName[]> = {
+  customer: ["createCustomer", "listCustomers"],
+  property: ["createProperty", "linkCustomerToProperty", "listProperties"],
+  priceBookItem: ["createPriceBookItem", "setPriceBookItemActive", "listPriceBook"],
+  job: ["createJob", "getJob", "updateJob", "listJobs"],
+  visit: ["scheduleVisit", "completeVisit"],
+  recurringSchedule: [
+    "createRecurringSchedule", "listRecurringSchedules", "recordRecurringCompletion",
+    "exceptRecurringOccurrence", "setRecurringScheduleActive",
+  ],
+  estimate: ["createEstimate", "declineEstimate", "listEstimates"],
+  invoice: ["createInvoice", "voidInvoice", "writeOffInvoice", "getInvoice", "listInvoices"],
+  payment: ["recordPayment", "listPayments"],
+  refund: ["recordRefund", "listPayments"],
+  attachment: ["uploadAttachment"],
+};
 
 /**
- * MAY THIS TOKEN RECORD HISTORY?
- *
- * There is no route that lists a token's permissions, so the question is
- * asked the way the target answers it: an invoice dated a month back, with a
- * stated tax, that cannot add up to the total it says it expects. The target
- * admits the date (403 without data:import), takes the tax (403 without it),
- * and refuses the totals (422) before it looks at the customer or stores
- * anything. A 422 on `expectedTotals` is therefore a yes, and nothing exists
- * afterwards either way. Asked once per ledger.
+ * The scoped resources whose records this migration has to find again, by
+ * externalRef, to rebuild a ledger and to reconcile. An app is nobody
+ * anything is assigned to, so any scope narrower than `all` lists nothing.
  */
-export async function preflight(target: Target, ledger: Ledger, now = new Date()): Promise<void> {
-  if (ledger.has(PREFLIGHT)) return;
-  const monthAgo = new Date(now.getTime() - 30 * 864e5).toISOString().slice(0, 10);
-  try {
-    await target.call("createInvoice", {
-      customerId: randomUUID(),
-      issuedOn: monthAgo,
-      memo: "Permission check by opentradesos-migrate. Refused by design; nothing is stored.",
-      lines: [{ name: "Permission check", unitPrice: "1", taxRate: "0", taxAmount: "0" }],
-      expectedTotals: { total: "0.01" },
-    }, { idempotencyKey: ledger.idempotencyKey(PREFLIGHT) });
-  } catch (error) {
-    if (error instanceof TargetError && error.status === 422 && error.issues.some((i) => i.path.startsWith("expectedTotals"))) {
-      await ledger.record({ key: PREFLIGHT, target: "done" });
-      return;
-    }
-    if (error instanceof TargetError && error.status === 403) throw error;
-    throw new LoadStopped(`The permission check did not get the refusal it expected (${(error as Error).message}). ` +
-      "Check that --target is an OpenTradesOS that records history (data:import), then run load again.");
+const NEEDS_ALL: Partial<Record<PlanItem, string>> = {
+  customer: "customer", job: "job", estimate: "estimate", invoice: "invoice",
+};
+
+async function holds(
+  snapshot: Snapshot, adapter: SourceAdapter, entity: EntityName,
+  test: (record: Record<string, unknown>) => boolean = () => true,
+): Promise<boolean> {
+  for await (const item of canonicalRecords(snapshot, adapter, entity)) {
+    if ("record" in item && test(item.record)) return true;
   }
-  throw new LoadStopped("The target accepted an invoice it should have refused for not adding up. Nothing more was sent. " +
-    "Check that --target is an OpenTradesOS that checks expectedTotals before loading into it.");
+  return false;
+}
+
+/** What the snapshot will make the loader do. Reads the snapshot; stops at the first record that answers each question. */
+export async function planLoad(snapshot: Snapshot, adapter: SourceAdapter): Promise<LoadPlan> {
+  const uses: PlanItem[] = [];
+  const check = async (item: PlanItem, entity: EntityName, test?: (record: Record<string, unknown>) => boolean) => {
+    if (await holds(snapshot, adapter, entity, test)) uses.push(item);
+  };
+  await check("customer", "customer");
+  await check("property", "property");
+  await check("priceBookItem", "priceBookItem");
+  await check("job", "job");
+  await check("visit", "job", (r) => Array.isArray(r["visits"]) && r["visits"].length > 0);
+  await check("recurringSchedule", "recurringSchedule");
+  await check("estimate", "estimate");
+  await check("invoice", "invoice");
+  await check("payment", "payment", (r) => money.compare(String(r["amount"] ?? "0"), "0") >= 0);
+  await check("refund", "payment", (r) => money.compare(String(r["amount"] ?? "0"), "0") < 0);
+  await check("attachment", "attachment");
+  return { uses };
+}
+
+/** Every permission and `all` scope a plan needs. `data:import` always: every load records history. */
+export function requirementsOf(plan: LoadPlan): { permissions: string[]; allScope: string[] } {
+  const permissions = new Set<string>(["data:import"]);
+  const allScope = new Set<string>();
+  for (const item of plan.uses) {
+    for (const route of ROUTES_FOR[item]) for (const p of routePermissions(route)) permissions.add(p);
+    const scoped = NEEDS_ALL[item];
+    if (scoped) allScope.add(scoped);
+  }
+  return { permissions: [...permissions].sort(), allScope: [...allScope].sort() };
+}
+
+/** The ledger line naming the company this ledger loads into. */
+export const ORGANIZATION_KEY = "target#organization";
+
+/**
+ * MAY THIS TOKEN DO WHAT THIS LOAD WILL DO?
+ *
+ * One read of `GET /v1/apps/me`, which answers with the app behind the
+ * token, exactly the permissions its install granted, and the scope it
+ * holds on every scoped resource. Nothing is written to find out. Every
+ * shortfall is named in one message, because an owner asked to grant one
+ * missing permission and then another, a load apart, stops answering.
+ *
+ * The company the token belongs to is written to the ledger the first time
+ * and checked on every run after it, which is a stronger guard than the
+ * host the ledger was opened for: one deployment serves many companies, and
+ * a ledger resumed against another one's token would skip every record it
+ * thinks it made and send the rest linked to ids that are not there.
+ *
+ * A core older than the route answers 404, and the load stops and says to
+ * upgrade: the only other way to ask was a write the target was expected to
+ * refuse, and a probe that relies on validation order is one change in that
+ * order away from creating the record it meant not to.
+ */
+export async function preflight(target: Target, ledger: Ledger, plan: LoadPlan): Promise<AppSelf> {
+  let me: AppSelf;
+  try {
+    me = await target.call("getAppSelf", {});
+  } catch (error) {
+    if (error instanceof TargetError && error.status === 404) {
+      throw new LoadStopped(
+        "The target cannot say what this token may do: it has no GET /v1/apps/me, so it is an OpenTradesOS older than this toolkit " +
+          "supports, or the token is not a connected-app token. Nothing was written. Upgrade OpenTradesOS to a version that answers " +
+          "GET /v1/apps/me (docs/loading.md), check OPENTRADESOS_TOKEN is the app's token, then run load again.",
+      );
+    }
+    throw error;
+  }
+
+  const recorded = ledger.get(ORGANIZATION_KEY);
+  if (recorded && recorded !== me.organizationId) {
+    throw new LoadStopped(
+      `This token belongs to organization ${me.organizationId} (app "${me.name}"), and the ledger records a load into ` +
+        `organization ${recorded}. Resuming would skip records that are not in this company and link the rest to ids that ` +
+        "do not exist here. Nothing was written. Use the token for the company this ledger loaded into, or give this one " +
+        "its own ledger with --ledger.",
+    );
+  }
+
+  const needs = requirementsOf(plan);
+  const held = new Set(me.permissions);
+  const missing = needs.permissions.filter((p) => !held.has(p));
+  const narrow = needs.allScope.filter((r) => me.scopes[r] !== "all");
+  if (missing.length > 0 || narrow.length > 0) {
+    const lines: string[] = [];
+    if (missing.length > 0) lines.push(`missing permission${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
+    if (narrow.length > 0) {
+      lines.push(`scope narrower than "all" on: ${narrow.map((r) => `${r} (${me.scopes[r] ?? "own"})`).join(", ")}`);
+    }
+    const history = missing.includes("data:import")
+      ? " data:import is what lets it record history (back-dated invoices, payments and completions, document numbers, tax as charged); only an owner can give it."
+      : "";
+    const scope = narrow.length > 0
+      ? " Under a narrower scope an app lists none of what it made, so nothing loaded could be found again or reconciled."
+      : "";
+    throw new LoadStopped(
+      `The app "${me.name}" in organization ${me.organizationId} cannot do what this load needs. ${lines.join("; ")}.` +
+        `${history}${scope} Nothing was written. Ask an owner to grant ${missing.length > 0 && narrow.length > 0 ? "these" : "this"} ` +
+        "for the length of the migration (docs/loading.md), then run load again.",
+    );
+  }
+
+  if (!recorded) await ledger.record({ key: ORGANIZATION_KEY, target: me.organizationId });
+  return me;
 }
 
 /** Records that did not land and will not until something changes. */
@@ -770,6 +881,9 @@ export function renderLoad(report: LoadReport, options: { limit?: number } = {})
   out.push(report.dryRun
     ? "DRY RUN against a scratch tenant in memory. Nothing was written anywhere."
     : `LOAD into ${report.target}, as externalSource ${report.externalSource}`);
+  if (report.app && !report.dryRun) {
+    out.push(`  As ${report.app.name}${report.app.publisher ? ` (${report.app.publisher})` : ""}, in organization ${report.app.organizationId}`);
+  }
   if (report.rebuilt) {
     const found = Object.entries(report.rebuilt).filter(([, n]) => n > 0).map(([e, n]) => `${n} ${e}`);
     out.push(`  Ledger rebuilt from the target: ${found.length > 0 ? found.join(", ") : "nothing was missing"}.`);

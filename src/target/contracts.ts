@@ -529,60 +529,91 @@ const RecurringScheduleOut = z.object({
   active: z.boolean(),
 }).passthrough();
 
+// contracts/apps.ts: what the token may do
+
+/** contracts/apps.ts ScopeValue. Which of a kind of record a token reaches. */
+export const ScopeValue = z.enum(["own", "crew", "business_unit", "location", "all"]);
+export type ScopeValue = z.infer<typeof ScopeValue>;
+
+/**
+ * contracts/apps.ts getAppSelf (GET /v1/apps/me). The app behind the token,
+ * exactly the permissions the install granted, and the scope in force on
+ * every scoped resource, the unnamed ones included. Read leniently: a scope
+ * value this toolkit does not know is still a scope that is not `all`.
+ */
+const AppSelfOut = z.object({
+  appId: Uuid,
+  name: z.string(),
+  publisher: z.string().nullable(),
+  organizationId: Uuid,
+  permissions: z.array(z.string()),
+  scopes: z.record(z.string()),
+}).passthrough();
+export type AppSelf = z.infer<typeof AppSelfOut>;
+
+/** contracts/billing.ts listPayments totals: for the window, never for the page. */
+const PaymentTotals = z.object({
+  gross: MoneyString, fees: MoneyString, refunded: MoneyString, net: MoneyString,
+});
+
 /**
  * Every route the toolkit calls. `path` is the contract's own path; the
  * mount prefix (`/api` on the web app) belongs to the base URL.
+ * `permissions` is what the contract declares the route needs, which is
+ * what the load's preflight asks the token for and what the in-memory
+ * target refuses without.
  */
 export const ROUTES = {
-  createCustomer: { method: "POST", path: "/v1/customers", input: CustomerCreate, output: withId },
+  getAppSelf: { method: "GET", path: "/v1/apps/me", permissions: [], input: z.object({}), output: AppSelfOut },
+  createCustomer: { method: "POST", path: "/v1/customers", permissions: ["customer:write"], input: CustomerCreate, output: withId },
   listCustomers: {
-    method: "GET", path: "/v1/customers",
+    method: "GET", path: "/v1/customers", permissions: ["customer:read"],
     input: z.object({ ...PageInput, includeInactive: z.boolean().default(false), ...ExternalLookup }),
     output: page(Row),
   },
-  createProperty: { method: "POST", path: "/v1/properties", input: PropertyCreate, output: withId },
+  createProperty: { method: "POST", path: "/v1/properties", permissions: ["property:write"], input: PropertyCreate, output: withId },
   linkCustomerToProperty: {
-    method: "POST", path: "/v1/properties/{id}/customers", input: PropertyLink,
+    method: "POST", path: "/v1/properties/{id}/customers", permissions: ["property:write"], input: PropertyLink,
     output: z.object({ ok: z.literal(true) }).passthrough(),
   },
   listProperties: {
-    method: "GET", path: "/v1/properties", input: z.object({ ...PageInput, ...ExternalLookup }), output: page(Row),
+    method: "GET", path: "/v1/properties", permissions: ["property:read"], input: z.object({ ...PageInput, ...ExternalLookup }), output: page(Row),
   },
-  createPriceBookItem: { method: "POST", path: "/v1/pricebook/items", input: PriceBookItemCreate, output: withId },
+  createPriceBookItem: { method: "POST", path: "/v1/pricebook/items", permissions: ["pricebook:write"], input: PriceBookItemCreate, output: withId },
   setPriceBookItemActive: {
-    method: "POST", path: "/v1/pricebook/items/{id}/active", input: PriceBookItemActive, output: withId,
+    method: "POST", path: "/v1/pricebook/items/{id}/active", permissions: ["pricebook:write"], input: PriceBookItemActive, output: withId,
   },
   listPriceBook: {
-    method: "GET", path: "/v1/pricebook/items",
+    method: "GET", path: "/v1/pricebook/items", permissions: ["pricebook:read"],
     input: z.object({ ...PageInput, includeInactive: z.boolean().default(false), ...ExternalLookup }),
     output: page(Row),
   },
-  createJob: { method: "POST", path: "/v1/jobs", input: JobCreate, output: JobOut },
-  getJob: { method: "GET", path: "/v1/jobs/{id}", input: z.object({ id: Uuid }), output: JobOut },
-  updateJob: { method: "PATCH", path: "/v1/jobs/{id}", input: JobUpdate, output: JobOut },
-  scheduleVisit: { method: "POST", path: "/v1/jobs/{id}/visits", input: VisitSchedule, output: VisitOut },
-  completeVisit: { method: "POST", path: "/v1/visits/{id}/complete", input: VisitComplete, output: VisitOut },
-  listJobs: { method: "GET", path: "/v1/jobs", input: z.object({ ...PageInput, ...ExternalLookup }), output: page(Row) },
+  createJob: { method: "POST", path: "/v1/jobs", permissions: ["job:write"], input: JobCreate, output: JobOut },
+  getJob: { method: "GET", path: "/v1/jobs/{id}", permissions: ["job:read"], input: z.object({ id: Uuid }), output: JobOut },
+  updateJob: { method: "PATCH", path: "/v1/jobs/{id}", permissions: ["job:write"], input: JobUpdate, output: JobOut },
+  scheduleVisit: { method: "POST", path: "/v1/jobs/{id}/visits", permissions: ["visit:write"], input: VisitSchedule, output: VisitOut },
+  completeVisit: { method: "POST", path: "/v1/visits/{id}/complete", permissions: ["job:complete"], input: VisitComplete, output: VisitOut },
+  listJobs: { method: "GET", path: "/v1/jobs", permissions: ["job:read"], input: z.object({ ...PageInput, ...ExternalLookup }), output: page(Row) },
   listJobTypes: {
-    method: "GET", path: "/v1/job-types", input: z.object({ includeInactive: z.boolean().default(false) }),
+    method: "GET", path: "/v1/job-types", permissions: ["job:read"], input: z.object({ includeInactive: z.boolean().default(false) }),
     output: z.object({ data: z.array(JobTypeOut) }),
   },
-  createEstimate: { method: "POST", path: "/v1/estimates", input: EstimateCreate, output: EstimateOut },
-  declineEstimate: { method: "POST", path: "/v1/estimates/{id}/decline", input: EstimateDecline, output: EstimateOut },
+  createEstimate: { method: "POST", path: "/v1/estimates", permissions: ["estimate:write"], input: EstimateCreate, output: EstimateOut },
+  declineEstimate: { method: "POST", path: "/v1/estimates/{id}/decline", permissions: ["estimate:write"], input: EstimateDecline, output: EstimateOut },
   listEstimates: {
-    method: "GET", path: "/v1/estimates", input: z.object({ ...PageInput, ...ExternalLookup }),
+    method: "GET", path: "/v1/estimates", permissions: ["estimate:read"], input: z.object({ ...PageInput, ...ExternalLookup }),
     output: page(z.object({ id: Uuid, status: z.string(), total: MoneyString, externalRef: ExternalRefOut }).passthrough()),
   },
-  createInvoice: { method: "POST", path: "/v1/invoices", input: InvoiceCreate, output: InvoiceOut },
-  voidInvoice: { method: "POST", path: "/v1/invoices/{id}/void", input: InvoiceEnd, output: InvoiceOut },
-  writeOffInvoice: { method: "POST", path: "/v1/invoices/{id}/write-off", input: InvoiceEnd, output: InvoiceOut },
-  getInvoice: { method: "GET", path: "/v1/invoices/{id}", input: z.object({ id: Uuid }), output: InvoiceOut },
+  createInvoice: { method: "POST", path: "/v1/invoices", permissions: ["invoice:write"], input: InvoiceCreate, output: InvoiceOut },
+  voidInvoice: { method: "POST", path: "/v1/invoices/{id}/void", permissions: ["invoice:void"], input: InvoiceEnd, output: InvoiceOut },
+  writeOffInvoice: { method: "POST", path: "/v1/invoices/{id}/write-off", permissions: ["invoice:writeoff"], input: InvoiceEnd, output: InvoiceOut },
+  getInvoice: { method: "GET", path: "/v1/invoices/{id}", permissions: ["invoice:read"], input: z.object({ id: Uuid }), output: InvoiceOut },
   listInvoices: {
-    method: "GET", path: "/v1/invoices", input: z.object({ ...PageInput, ...ExternalLookup }), output: page(InvoiceOut),
+    method: "GET", path: "/v1/invoices", permissions: ["invoice:read"], input: z.object({ ...PageInput, ...ExternalLookup }), output: page(InvoiceOut),
   },
-  recordPayment: { method: "POST", path: "/v1/payments", input: PaymentRecord, output: PaymentOut },
+  recordPayment: { method: "POST", path: "/v1/payments", permissions: ["payment:collect"], input: PaymentRecord, output: PaymentOut },
   listPayments: {
-    method: "GET", path: "/v1/payments",
+    method: "GET", path: "/v1/payments", permissions: ["payment:read"],
     input: z.object({
       ...PageInput,
       customerId: Uuid.optional(),
@@ -590,10 +621,20 @@ export const ROUTES = {
       unappliedOnly: z.boolean().default(false),
       ...ExternalLookup,
     }),
-    output: page(PaymentRow),
+    /**
+     * A page of payments under `data`, by cursor, and beside it totals and a
+     * per-method split for the whole filtered window. The totals are the
+     * core's banking summary: they cover every payment in the company, not
+     * only this migration's, and the core computes them over at most 500
+     * rows, so reconcile never reads them and sums the pages instead.
+     */
+    output: page(PaymentRow).extend({
+      totals: PaymentTotals.optional(),
+      byMethod: z.array(z.object({ method: z.string(), count: z.number(), gross: MoneyString, net: MoneyString })).optional(),
+    }),
   },
   recordRefund: {
-    method: "POST", path: "/v1/payments/{id}/refunds",
+    method: "POST", path: "/v1/payments/{id}/refunds", permissions: ["payment:refund"],
     input: z.object({
       id: Uuid,
       amount: MoneyString,
@@ -605,7 +646,7 @@ export const ROUTES = {
     output: PaymentRow,
   },
   uploadAttachment: {
-    method: "POST", path: "/v1/attachments",
+    method: "POST", path: "/v1/attachments", permissions: ["document:write"],
     input: z.object({
       entityType: AttachableEntity,
       entityId: Uuid,
@@ -618,24 +659,24 @@ export const ROUTES = {
     output: z.object({ id: Uuid, entityType: AttachableEntity, entityId: Uuid, alreadyHeld: z.boolean() }).passthrough(),
   },
   listPeople: {
-    method: "GET", path: "/v1/people", input: z.object({ email: z.string().max(320).optional() }),
+    method: "GET", path: "/v1/people", permissions: ["user:read"], input: z.object({ email: z.string().max(320).optional() }),
     output: z.object({ people: z.array(PersonOut) }),
   },
   createRecurringSchedule: {
-    method: "POST", path: "/v1/recurring-schedules", input: RecurringScheduleCreate,
+    method: "POST", path: "/v1/recurring-schedules", permissions: ["job:write"], input: RecurringScheduleCreate,
     output: z.object({ id: Uuid, label: z.string(), nextDueOn: z.string().nullable() }).passthrough(),
   },
   listRecurringSchedules: {
-    method: "GET", path: "/v1/recurring-schedules", input: z.object({}),
+    method: "GET", path: "/v1/recurring-schedules", permissions: ["job:read"], input: z.object({}),
     output: z.object({ schedules: z.array(RecurringScheduleOut) }),
   },
   recordRecurringCompletion: {
-    method: "POST", path: "/v1/recurring-schedules/{id}/completed",
+    method: "POST", path: "/v1/recurring-schedules/{id}/completed", permissions: ["job:write"],
     input: z.object({ id: Uuid, completedOn: z.string().date() }),
     output: z.object({ id: Uuid, lastOccurredOn: z.string(), nextDueOn: z.string().nullable() }).passthrough(),
   },
   exceptRecurringOccurrence: {
-    method: "POST", path: "/v1/recurring-schedules/{id}/exceptions",
+    method: "POST", path: "/v1/recurring-schedules/{id}/exceptions", permissions: ["job:write"],
     input: z.object({
       id: Uuid,
       date: z.string().date(),
@@ -646,7 +687,7 @@ export const ROUTES = {
     output: z.object({ id: Uuid }).passthrough(),
   },
   setRecurringScheduleActive: {
-    method: "POST", path: "/v1/recurring-schedules/{id}/active",
+    method: "POST", path: "/v1/recurring-schedules/{id}/active", permissions: ["job:write"],
     input: z.object({ id: Uuid, active: z.boolean() }),
     output: z.object({ id: Uuid, active: z.boolean() }).passthrough(),
   },
@@ -667,3 +708,11 @@ export function validate<N extends RouteName>(name: N, input: unknown):
     issues: parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
   };
 }
+
+/** What the contract says a route needs. */
+export function routePermissions(name: RouteName): readonly string[] {
+  return ROUTES[name].permissions;
+}
+
+/** contracts/apps.ts: the scoped resources GET /v1/apps/me reports on. */
+export const SCOPED_RESOURCES = ["job", "visit", "customer", "estimate", "invoice", "timesheet", "servicereport", "conversation"] as const;

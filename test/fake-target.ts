@@ -13,6 +13,11 @@ import { TargetError } from "../src/target/client.js";
  * MemoryTarget that `dryrun` loads into. The loader under test goes through
  * HttpTarget and undici exactly as it does against a real deployment.
  *
+ * Every route in the mirrored contracts is served, `GET /v1/apps/me`
+ * included, so a test sets what the token holds, its scopes and its company
+ * on the MemoryTarget it passes in, or `appsMe: false` for a core too old to
+ * answer, which is a 404 here as it is there.
+ *
  * It can be told to misbehave: answer the next N requests with a status, so
  * the 429 and 5xx paths are exercised over a real socket rather than a mock.
  */

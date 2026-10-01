@@ -20,9 +20,12 @@ import { pages } from "./client.js";
  * one. Records the target holds that this migration did not make are counted
  * separately and shown, so nobody wonders.
  *
- * Payments are read back through GET /v1/payments: their count, what
- * arrived less what was given back, and the money each still holds for the
- * customer. A refund in the source is a record of its own there and an
+ * Payments are read back through GET /v1/payments, a page under `data` at a
+ * time by cursor: their count, what arrived less what was given back, and
+ * the money each still holds for the customer. The `totals` and `byMethod`
+ * the route returns beside each page are not used: they are the core's
+ * banking summary for every payment in the company, not only this
+ * migration's, and are computed over at most 500 of them. A refund in the source is a record of its own there and an
  * amount off its payment here, so it counts as present when its payment is.
  */
 

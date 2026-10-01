@@ -63,15 +63,16 @@ payment's `receivedAt`, a refund's `refundedAt`, a job's `completedAt`), a
 source document `number`, a line's `taxRate`, `taxAmount` or `priceAsGiven`.
 Only the owner preset holds it, so only an owner can give it to the
 migration's app. Without it each of those is a 403 `Missing permission:
-data:import`. `load` asks before its first write, with an invoice the target
-refuses either way and stores nothing from, and stops at once if the answer
-is no.
+data:import`.
 
 The app also needs the **`all` scope** on customers, jobs, estimates and
 invoices. With a narrower one, a list returns only some records and none of
-the app's own, so nothing loaded could be found again or reconciled. `load`
-checks after the first record of each kind that it can see it, and stops if
-it cannot.
+the app's own, so nothing loaded could be found again or reconciled.
+
+`load` reads `GET /v1/apps/me` before its first write, which says exactly
+what the install granted and the scope on every scoped resource, and stops
+naming everything missing. Nothing is written to find out. A core without
+the route is told to upgrade; there is no write probe to fall back on.
 
 Nothing posts into a **closed accounting period**, whoever asks: an invoice,
 payment or refund dated inside one is a 409 against that record. Reopen the

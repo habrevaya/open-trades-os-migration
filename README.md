@@ -60,11 +60,12 @@ to one payment, and recurring schedules that are not running or that the
 target cannot repeat.
 
 Loading history needs a token an owner has given `data:import`, and the
-`all` scope on customers, jobs, estimates and invoices; `load` checks both
-before it writes anything that depends on them. See
+`all` scope on customers, jobs, estimates and invoices; `load` reads
+`GET /v1/apps/me` and checks both, and every other permission the snapshot
+needs, before it writes anything. See
 [docs/loading.md](docs/loading.md).
 
-The mapping and loading logic is covered by 261 tests against fixtures and
+The mapping and loading logic is covered by 267 tests against fixtures and
 a fake OpenTradesOS served over real HTTP, including a load killed after each
 of its writes in turn and resumed, and a lost ledger rebuilt from the target. What no test can tell you is whether a
 real tenant matches the fixtures, and for some field the answer will be no.

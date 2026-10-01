@@ -4,14 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Snapshot } from "../src/snapshot/index.js";
+import * as money from "../src/money/index.js";
 import { jobber } from "../src/adapters/jobber/index.js";
 import { housecallPro } from "../src/adapters/housecall-pro/index.js";
 import { transform, CountingSink } from "../src/transform/index.js";
 import { buildMapping, type Mapping } from "../src/mapping/index.js";
-import { load, renderLoad, failures, type LoadReport } from "../src/load/index.js";
+import { load, renderLoad, failures, ORGANIZATION_KEY, type LoadReport } from "../src/load/index.js";
 import { Ledger, LedgerMismatchError } from "../src/load/ledger.js";
 import { HttpTarget, TargetError, type Target, type CallOptions } from "../src/target/client.js";
-import { MemoryTarget } from "../src/target/memory.js";
+import { MemoryTarget, withoutPermissions } from "../src/target/memory.js";
 import { readTarget } from "../src/target/read.js";
 import { reconcile, sourceSide } from "../src/reconcile/index.js";
 import type { RouteName, InputOf, OutputOf } from "../src/target/contracts.js";
@@ -237,8 +238,9 @@ describe("load into a fake OpenTradesOS, over HTTP", () => {
     expect(refused?.sourceId).toBe("adr_9");
     expect(refused?.issues?.map((i) => i.path)).toEqual(expect.arrayContaining(["address.line1", "address.city", "address.postalCode"]));
     expect(fake.memory.calls.get("createProperty")).toBe(4);
-    // The one 422 is the permission check, which the target refuses by design.
-    expect(fake.log.filter((r) => r.status === 422)).toEqual([expect.objectContaining({ method: "POST", path: "/api/v1/invoices" })]);
+    // Local validation caught it, and asking what the token may do is a read.
+    expect(fake.log.filter((r) => r.status === 422)).toEqual([]);
+    expect(fake.log[0]).toMatchObject({ method: "GET", path: "/api/v1/apps/me", status: 200 });
 
     // Everything that does not depend on it loads, including the job whose
     // property id was derived from an address with no id of its own.
@@ -394,6 +396,123 @@ describe("the ledger", () => {
     expect(Ledger.memory("t", "csv", "export-a").idempotencyKey("customer:C-1")).toBe(key);
     // Two spreadsheets that both number their customers from C-1 never share a key.
     expect(Ledger.memory("t", "csv", "export-b").idempotencyKey("customer:C-1")).not.toBe(key);
+  });
+});
+
+describe("asking the target what the token may do, before the first write", () => {
+  const writes = (f: FakeTarget) => f.log.filter((r) => r.method !== "GET");
+
+  it("names every permission the plan needs and the token lacks, in one message, and writes nothing", async () => {
+    fake = await startFakeTarget(new MemoryTarget({ permissions: withoutPermissions("data:import", "estimate:write", "payment:collect") }));
+    const snapshot = await jobberSnapshot();
+    const report = await load({
+      snapshot, adapter: jobber, mapping: await mappingFor(snapshot),
+      ledger: await Ledger.open(ledgerPath(), fake.url, "jobber"),
+      target: new HttpTarget(fake.url, TOKEN, { retry: quietRetry() }),
+    });
+    expect(report.aborted).toMatch(/missing permissions: data:import, estimate:write, payment:collect\./);
+    expect(report.aborted).toContain("Nothing was written");
+    expect(fake.log.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /api/v1/apps/me"]);
+    expect(writes(fake)).toEqual([]);
+  });
+
+  it("asks only for what this snapshot will use", async () => {
+    // Housecall Pro's snapshot here has no price book, payments or refunds.
+    fake = await startFakeTarget(new MemoryTarget({ permissions: withoutPermissions("pricebook:write", "payment:collect", "payment:refund") }));
+    const snapshot = await hcpSnapshot();
+    const report = await load({
+      snapshot, adapter: housecallPro, mapping: await mappingFor(snapshot, housecallPro),
+      ledger: await Ledger.open(ledgerPath(), fake.url, "housecall-pro"),
+      target: new HttpTarget(fake.url, TOKEN, { retry: quietRetry() }),
+    });
+    expect(report.aborted).toBeUndefined();
+    expect(report.entities.invoice).toMatchObject({ created: 2 });
+  });
+
+  it("refuses a scope narrower than all on the records it must find again", async () => {
+    fake = await startFakeTarget(new MemoryTarget({ scopes: { job: "location", timesheet: "own" } }));
+    const snapshot = await jobberSnapshot();
+    const report = await load({
+      snapshot, adapter: jobber, mapping: await mappingFor(snapshot),
+      ledger: await Ledger.open(ledgerPath(), fake.url, "jobber"),
+      target: new HttpTarget(fake.url, TOKEN, { retry: quietRetry() }),
+    });
+    // Timesheets are nothing a migration loads, so their scope is nobody's business here.
+    expect(report.aborted).toMatch(/scope narrower than "all" on: job \(location\)\. Under a narrower scope/);
+    expect(report.aborted).not.toContain("timesheet");
+    expect(writes(fake)).toEqual([]);
+  });
+
+  it("records the company it loads into, says who it is, and will not resume into another", async () => {
+    const home = new MemoryTarget({ appName: "Switchover", organizationId: randomUUID() });
+    const snapshot = await jobberSnapshot();
+    const mapping = await mappingFor(snapshot);
+    const first = await load({ snapshot, adapter: jobber, target: home, mapping, ledger: await Ledger.open(ledgerPath(), "https://ots.example.com/api", "jobber") });
+    expect(first.aborted).toBeUndefined();
+    expect(first.app).toMatchObject({ name: "Switchover", organizationId: home.organizationId });
+    expect(renderLoad(first)).toContain(`As Switchover, in organization ${home.organizationId}`);
+
+    // Same host, same ledger, another company's token.
+    const other = new MemoryTarget({ organizationId: randomUUID() });
+    const ledger = await Ledger.open(ledgerPath(), "https://ots.example.com/api", "jobber");
+    expect(ledger.get(ORGANIZATION_KEY)).toBe(home.organizationId);
+    const refused = await load({ snapshot, adapter: jobber, target: other, mapping, ledger });
+    expect(refused.aborted).toContain(`belongs to organization ${other.organizationId}`);
+    expect(refused.aborted).toContain(`records a load into organization ${home.organizationId}`);
+    expect([...other.calls.keys()]).toEqual(["getAppSelf"]);
+
+    // The right company resumes, and finds everything already there.
+    const resumed = await load({ snapshot, adapter: jobber, target: home, mapping, ledger: await Ledger.open(ledgerPath(), "https://ots.example.com/api", "jobber") });
+    expect(resumed.aborted).toBeUndefined();
+    expect(resumed.entities.customer).toMatchObject({ created: 0, already: 3 });
+  });
+
+  it("refuses, rather than probing with a write, on a core too old to answer", async () => {
+    fake = await startFakeTarget(new MemoryTarget({ appsMe: false }));
+    const snapshot = await jobberSnapshot();
+    const report = await load({
+      snapshot, adapter: jobber, mapping: await mappingFor(snapshot),
+      ledger: await Ledger.open(ledgerPath(), fake.url, "jobber"),
+      target: new HttpTarget(fake.url, TOKEN, { retry: quietRetry() }),
+    });
+    expect(report.aborted).toMatch(/no GET \/v1\/apps\/me.*Upgrade OpenTradesOS/);
+    expect(fake.log.map((r) => `${r.method} ${r.path} ${r.status}`)).toEqual(["GET /api/v1/apps/me 404"]);
+  });
+});
+
+describe("reading payments back, a page at a time", () => {
+  it("follows the cursor through every page and ignores the window totals", async () => {
+    const memory = new MemoryTarget();
+    fake = await startFakeTarget(memory);
+    const customer = await memory.call("createCustomer", { name: "Many payments" });
+    const ledger = await Ledger.open(ledgerPath(), fake.url, "jobber");
+    let ours = "0";
+    const at = new Date(Date.now() - 864e5).toISOString();
+    for (let i = 0; i < 450; i++) {
+      const amount = `${(i % 7) + 1}.25`;
+      const paid = await memory.call("recordPayment", { customerId: customer.id, method: i % 2 ? "cash" : "check", amount, receivedAt: at, allocations: [] });
+      if (i % 45 === 0) await memory.call("recordRefund", { id: paid.id, amount: "1.00", method: "cash", reason: "Returned" });
+      // Ten of them are somebody else's: typed in during the migration.
+      if (i % 45 === 1) continue;
+      await ledger.record({ key: `payment:P-${i}`, target: paid.id });
+      ours = money.add(ours, money.subtract(amount, i % 45 === 0 ? "1.00" : "0"));
+    }
+
+    const target = new HttpTarget(fake.url, TOKEN, { retry: quietRetry() });
+    const page = await target.call("listPayments", { limit: 200 });
+    expect(page.data).toHaveLength(200);
+    expect(page.hasMore).toBe(true);
+    expect(page.totals?.refunded).toBe("10.0000");
+    expect(page.byMethod?.map((m) => m.count).sort()).toEqual([225, 225]);
+
+    fake.log.length = 0;
+    const reading = await readTarget(target, ledger);
+    expect(reading.side.counts.payment).toBe(440);
+    expect(reading.missing.payment).toBeUndefined();
+    expect(reading.other.payment).toBe(10);
+    expect(reading.side.paymentTotal).toBe(money.normalize(ours));
+    const reads = fake.log.filter((r) => r.path === "/api/v1/payments");
+    expect(reads).toHaveLength(3);
   });
 });
 

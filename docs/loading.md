@@ -37,6 +37,10 @@ a source document's own number, and tax as another system charged it. Only
 the owner preset holds it, so only an owner can grant it, and that is the
 point. Without it, `load` stops before its first write and says so.
 
+`load` needs an OpenTradesOS that answers `GET /v1/apps/me`, which is how
+it learns what the token holds without writing anything. On an older core
+it stops and asks for an upgrade.
+
 ## 1. Map
 
 ```
@@ -86,7 +90,8 @@ deposits held unapplied, visits deduplicated by key, records found by
 `externalRef`.
 
 `--without-import` runs it as a token without `data:import`, to see the
-refusal before anybody has to ask an owner.
+refusal before anybody has to ask an owner. The scratch tenant answers
+`GET /v1/apps/me` too, so the dry run makes the same check `load` does.
 
 The report has four parts:
 
@@ -113,14 +118,42 @@ npx @opentradesos/migrate load --in ./snapshot --target https://ots.example.com
 The token is the connected-app token from step 0. Like every credential here
 it comes from the environment, never a flag.
 
-Before its first write `load` asks the target whether the token may record
-history, with an invoice dated a month back that cannot add up to the total it
-says it expects: the target refuses it either way and stores nothing, with a
-403 naming `data:import` if the token lacks it (the load stops, saying what to
-ask the owner for) or a 422 on the totals if it holds it. After the first
-customer, job, estimate and invoice it makes, it checks it can list each back
-by its `externalRef`; a token whose scope is narrower than `all` cannot, and
-the load stops rather than make records nobody can find.
+Before its first write `load` reads `GET /v1/apps/me`, which names the app
+behind the token, the company it belongs to, exactly the permissions the
+install granted and the scope on every scoped resource. It prints the app
+and the company, then checks the token against what this snapshot will
+actually make it do:
+
+| The snapshot holds | The token needs |
+|---|---|
+| anything | `data:import` |
+| customers | `customer:write`, `customer:read`, and the `all` scope on customers |
+| properties | `property:write`, `property:read` |
+| price book items | `pricebook:write`, `pricebook:read` |
+| jobs | `job:write`, `job:read`, and the `all` scope on jobs |
+| jobs with visits | `visit:write`, `job:complete` |
+| recurring schedules | `job:write`, `job:read` |
+| estimates | `estimate:write`, `estimate:read`, and the `all` scope on estimates |
+| invoices | `invoice:write`, `invoice:read`, `invoice:void`, `invoice:writeoff`, and the `all` scope on invoices |
+| payments | `payment:collect`, `payment:read` |
+| refunds | `payment:refund`, `payment:read` |
+| attachments | `document:write`, for the `attachments` pass after load |
+
+Anything short stops the load with one message naming every missing
+permission and every scope that is not `all`, so the owner is asked once.
+Nothing is written to find this out. An app is nobody anything is assigned
+to, so under any scope narrower than `all` it lists none of what it made,
+and nothing loaded could be found again or reconciled.
+
+The first run records the company (`organizationId`) in the ledger, and every
+run after it refuses to resume if the token belongs to a different one. That
+is stronger than the ledger's host check: one deployment serves many
+companies, and a ledger resumed with another company's token would skip
+records that are not there and link the rest to ids that do not exist.
+
+A core that answers `GET /v1/apps/me` with a 404 is older than this toolkit
+supports (or the token is not an app token). `load` stops and says to upgrade;
+it never falls back to finding out by writing.
 
 `--target` takes the deployment's address; `/api` is added, and a pasted
 `/api` or `/api/v1` is understood.
@@ -183,7 +216,8 @@ time.
 
 A ledger belongs to one target. Pointing the same snapshot at a scratch
 tenant and then production gives each its own file; `load` refuses to resume
-a ledger written for a different target.
+a ledger written for a different target, or for a different company on the
+same one.
 
 ### Rate limits and failures
 
@@ -230,8 +264,12 @@ separately and not counted), and compares counts and four dollar totals with
 the snapshot: invoiced, open balance, payments, and payments allocated.
 Tolerance is zero cents unless `--tolerance-cents` says otherwise.
 
-Payments are read back through `GET /v1/payments`: their count, and what
-arrived less what was refunded. A refund counts as present when the payment
+Payments are read back through `GET /v1/payments`, page by page under
+`data`, following `nextCursor` until `hasMore` is false: their count, and
+what arrived less what was refunded. The `totals` and `byMethod` beside each
+page are the core's banking summary for the whole company, over at most 500
+payments, so reconcile does not use them; it sums the payments this
+migration's ledger names. A refund counts as present when the payment
 it was recorded against is. The report says how much is held for customers,
 applied to no invoice. Recurring schedules are counted too.
 

@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as money from "../money/index.js";
-import { ROUTES, JOB_TRANSITIONS, type RouteName, type InputOf, type OutputOf, type JobStatus, type ExternalRef } from "./contracts.js";
+import {
+  ROUTES, JOB_TRANSITIONS, SCOPED_RESOURCES, routePermissions,
+  type RouteName, type InputOf, type OutputOf, type JobStatus, type ExternalRef, type ScopeValue,
+} from "./contracts.js";
 import { TargetError, type CallOptions, type Target } from "./client.js";
 import { computeInvoice, TaxAsAppliedError } from "./totals.js";
 import { sniff, MAX_ATTACHMENT_BYTES } from "./files.js";
@@ -25,6 +28,11 @@ import { sniff, MAX_ATTACHMENT_BYTES } from "./files.js";
  *   - an `externalRef` already claimed for that kind of record is a 409
  *     naming the id it became, as services/provenance.ts assertUnclaimed
  *     says it, and every list finds records by it;
+ *   - every route needs the permissions its contract declares, and a token
+ *     without one is a 403 "Missing permission: <it>"; a list of customers,
+ *     jobs, estimates or invoices under a scope other than `all` is empty,
+ *     because an app is nobody anything is assigned to; GET /v1/apps/me
+ *     says what the token holds (or is a 404, as on a core before it);
  *   - HISTORY NEEDS `data:import` (core history, services/history.ts): a
  *     business date more than seven days back, a document number, a line's
  *     stated tax or `priceAsGiven` are a 403 "Missing permission:
@@ -99,14 +107,38 @@ export interface MemoryTargetOptions {
   /** The server's clock. */
   today?: () => Date;
   /**
-   * What the token may do beyond writing the records themselves. A
-   * migration's token is given `data:import` by the owner; leave it out to
-   * see what a token without it is refused.
+   * Every permission the token holds. Default: every permission a route
+   * this toolkit calls declares, and `data:import`, which is what an owner
+   * grants a migration. `withoutPermissions(...)` is the usual way to take
+   * some away.
    */
   permissions?: readonly string[];
+  /** The scope per scoped resource. Unnamed ones are `all`, unlike the core, so a test names what it narrows. */
+  scopes?: Partial<Record<string, ScopeValue>>;
+  /** The company the token belongs to. Default: a fresh id per target. */
+  organizationId?: string;
+  /** The app's name, as GET /v1/apps/me reports it. */
+  appName?: string;
+  /** False: a core older than GET /v1/apps/me, which answers it with a 404. */
+  appsMe?: boolean;
   /** The last day the books are closed through, if any. */
   closedThrough?: string;
 }
+
+/** What an owner grants a migration: every permission a route here declares, and `data:import`. */
+export const MIGRATION_GRANT: readonly string[] = [
+  ...new Set([...(Object.keys(ROUTES) as RouteName[]).flatMap((name) => routePermissions(name)), "data:import"]),
+].sort();
+
+/** The migration's grant, less some permissions. */
+export function withoutPermissions(...taken: string[]): string[] {
+  return MIGRATION_GRANT.filter((p) => !taken.includes(p));
+}
+
+/** The lists whose rows an app sees only under the `all` scope. */
+const SCOPED_LISTS: Partial<Record<RouteName, string>> = {
+  listCustomers: "customer", listJobs: "job", listEstimates: "estimate", listInvoices: "invoice",
+};
 
 /** core history LATE_ENTRY_DAYS and CLOCK_SKEW_MS. */
 const LATE_ENTRY_DAYS = 7;
@@ -146,12 +178,21 @@ export class MemoryTarget implements Target {
   private readonly claimed = new Map<string, string>();
   private readonly today: () => Date;
   private readonly permissions: Set<string>;
+  private readonly scopes: Record<string, ScopeValue>;
   private readonly closedThrough: string | undefined;
+  readonly organizationId: string;
+  private readonly appId = randomUUID();
+  private readonly appName: string;
+  private readonly appsMe: boolean;
 
   constructor(options: MemoryTargetOptions = {}) {
     this.today = options.today ?? (() => new Date());
-    this.permissions = new Set(options.permissions ?? ["data:import"]);
+    this.permissions = new Set(options.permissions ?? MIGRATION_GRANT);
+    this.scopes = Object.fromEntries(SCOPED_RESOURCES.map((r) => [r, options.scopes?.[r] ?? "all"]));
     this.closedThrough = options.closedThrough;
+    this.organizationId = options.organizationId ?? randomUUID();
+    this.appName = options.appName ?? "Migration";
+    this.appsMe = options.appsMe ?? true;
   }
 
   /** Someone who works here, as GET /v1/people lists them. Returns their technician id, if any. */
@@ -173,6 +214,10 @@ export class MemoryTarget implements Target {
 
   async call<N extends RouteName>(name: N, rawInput: InputOf<N>, options: CallOptions = {}): Promise<OutputOf<N>> {
     this.calls.set(name, (this.calls.get(name) ?? 0) + 1);
+    if (name === "getAppSelf" && !this.appsMe) throw new TargetError(404, "No route for /api/v1/apps/me");
+    for (const permission of routePermissions(name)) {
+      if (!this.permissions.has(permission)) throw new TargetError(403, `Missing permission: ${permission}`);
+    }
     const parsed = ROUTES[name].input.safeParse(rawInput);
     if (!parsed.success) {
       throw new TargetError(422, `${name}: Request did not match the schema`,
@@ -181,6 +226,8 @@ export class MemoryTarget implements Target {
     // Typed loosely inside: every branch below reads the fields its own route
     // declares, and the parse above is what makes that safe.
     const input = parsed.data as Record<string, unknown>;
+    const scoped = SCOPED_LISTS[name];
+    if (scoped && this.scopes[scoped] !== "all") return { data: [], nextCursor: null, hasMore: false } as OutputOf<N>;
     const result = this.handle(name, input, options.idempotencyKey);
     return structuredClone(result) as OutputOf<N>;
   }
@@ -267,6 +314,10 @@ export class MemoryTarget implements Target {
 
   private handle(name: RouteName, input: Record<string, unknown>, key: string | undefined): unknown {
     switch (name) {
+      case "getAppSelf": return {
+        appId: this.appId, name: this.appName, publisher: null, organizationId: this.organizationId,
+        permissions: [...this.permissions].sort(), scopes: { ...this.scopes },
+      };
       case "createCustomer": {
         const existing = this.seen("customer", key);
         if (existing) return this.customers.get(existing);
@@ -468,7 +519,8 @@ export class MemoryTarget implements Target {
         if (input["customerId"] !== undefined) all = all.filter((p) => p.customerId === input["customerId"]);
         if (input["invoiceId"] !== undefined) all = all.filter((p) => p.allocations.some((a) => a.invoiceId === input["invoiceId"]));
         if (input["unappliedOnly"] === true) all = all.filter((p) => money.compare(p.unappliedAmount, "0") > 0);
-        return this.page(this.external(all, input).map((p) => this.paymentRow(p)), input);
+        const window = this.external(all, input);
+        return { ...this.page(window.map((p) => this.paymentRow(p)), input), ...paymentTotals(window) };
       }
 
       // services/billing.ts recordRefund: out of held money first, then
@@ -802,6 +854,30 @@ export class MemoryTarget implements Target {
     const hasMore = start + limit < all.length;
     return { data, nextCursor: hasMore ? String(start + limit) : null, hasMore };
   }
+}
+
+/**
+ * services/billing.ts listPayments: totals and a per-method split for the
+ * window, not the page. Net is what arrived less what went back.
+ */
+function paymentTotals(window: { method: string; amount: string; refundedAmount: string }[]) {
+  let gross = "0";
+  let refunded = "0";
+  const methods = new Map<string, { count: number; gross: string; net: string }>();
+  for (const p of window) {
+    const net = money.subtract(p.amount, p.refundedAmount);
+    gross = money.add(gross, p.amount);
+    refunded = money.add(refunded, p.refundedAmount);
+    const row = methods.get(p.method) ?? { count: 0, gross: "0", net: "0" };
+    methods.set(p.method, { count: row.count + 1, gross: money.add(row.gross, p.amount), net: money.add(row.net, net) });
+  }
+  return {
+    totals: {
+      gross: money.normalize(gross), fees: "0.0000", refunded: money.normalize(refunded),
+      net: money.normalize(money.subtract(gross, refunded)),
+    },
+    byMethod: [...methods].map(([method, m]) => ({ method, count: m.count, gross: money.normalize(m.gross), net: money.normalize(m.net) })),
+  };
 }
 
 /** core recurrence nextOccurrence, for the models the API can create, from the day after `after`. */
