@@ -42,21 +42,31 @@ the cent or says exactly why not.
 | `sources` | Works. Lists what each adapter reads and what it cannot |
 | `extract` | Works. Resumable, checkpointed, rate limit aware |
 | `profile` | Works. Counts, date spans, fill rates, money totals, findings |
-| `map` | Works. Writes `mapping.json`: technicians, job types, statuses, payment methods. You edit it; re-running keeps your edits |
-| `dryrun` | Works. The real loader against a scratch tenant in memory: every request validated, every failure named, reconcile predicted |
-| `load` | Works. Public API only, dependency ordered, resumable from a local ledger, idempotent on source ids |
-| `attachments` | Partly. Downloads, hashes and indexes every file locally. Cannot attach them: the target API has no upload route yet |
-| `reconcile` | Works. Reads the target back and compares counts and four dollar totals |
+| `map` | Works. Writes `mapping.json`: technicians, job types, statuses, payment methods. With `--target`, proposes technicians and job types from the people and types the target already has. You edit it; re-running keeps your edits |
+| `dryrun` | Works. The real loader against a scratch tenant in memory: every request validated, totals checked to the cent, history refused without `data:import` (`--without-import` shows it), every failure named, reconcile predicted |
+| `load` | Works. Public API only, dependency ordered, history on its own dates, numbers and tax, deposits held, refunds, cancelled visits and recurring schedules. Resumable from a local ledger, idempotent on source ids, and the ledger rebuildable from the target (`--rebuild-ledger`) |
+| `attachments` | Works. Downloads, hashes and indexes every file, then attaches each to its record in the target. Files on equipment, over 20 MB, or not an image or PDF stay local, listed |
+| `reconcile` | Works. Reads the target back, payments included, and compares counts and four dollar totals |
 
-What the target's API cannot yet take is not faked. It is listed, endpoint
-by endpoint, in [docs/target-api-gaps.md](docs/target-api-gaps.md), and every
-load and dry run counts the records each gap touched. The two that cost the
-most: historical tax is not carried (the target computes tax as zero), and
-everything posts to the ledger dated the day of the load.
+What the target's API cannot take is not faked. It is listed, endpoint by
+endpoint, in [docs/target-api-gaps.md](docs/target-api-gaps.md), with what the
+core has closed since, and every load and dry run counts the records each
+open gap touched. A migrated invoice now arrives issued on its own day, under
+its own number, with the tax it charged and the total the customer was sent,
+and its payment on the day the money arrived. What still does not load: an
+estimate's approval, customer notes, contacts, a customer's equipment, a
+technician with no account in the target, a refund the source does not tie
+to one payment, and recurring schedules that are not running or that the
+target cannot repeat.
 
-The mapping and loading logic is covered by 236 tests against fixtures and
+Loading history needs a token an owner has given `data:import`, and the
+`all` scope on customers, jobs, estimates and invoices; `load` checks both
+before it writes anything that depends on them. See
+[docs/loading.md](docs/loading.md).
+
+The mapping and loading logic is covered by 261 tests against fixtures and
 a fake OpenTradesOS served over real HTTP, including a load killed after each
-of its writes in turn and resumed. What no test can tell you is whether a
+of its writes in turn and resumed, and a lost ledger rebuilt from the target. What no test can tell you is whether a
 real tenant matches the fixtures, and for some field the answer will be no.
 That is what `profile` and `dryrun` are for, and why `load` is last.
 
@@ -101,10 +111,11 @@ than after it.
 ## Then load it
 
 ```
-npx @opentradesos/migrate map --in ./snapshot        # then edit snapshot/mapping.json
+export OPENTRADESOS_TOKEN=ots_...                     # a connected app token with data:import
+npx @opentradesos/migrate map --in ./snapshot --target https://ots.example.com   # then check snapshot/mapping.json
 npx @opentradesos/migrate dryrun --in ./snapshot
-export OPENTRADESOS_TOKEN=ots_...                     # a connected app token
 npx @opentradesos/migrate load --in ./snapshot --target https://ots.example.com
+npx @opentradesos/migrate attachments --in ./snapshot --target https://ots.example.com
 npx @opentradesos/migrate reconcile --in ./snapshot --target https://ots.example.com
 ```
 
@@ -126,14 +137,16 @@ WAITING ON A RECORD THAT DID NOT LOAD (38)
   job 1043: property 999 is not in the target
 
 WHAT THE TARGET API COULD NOT TAKE (docs/target-api-gaps.md)
-   38110  invoice.issued_on: The historical issue date is replaced by the load date...
-      14  payment.unapplied: A deposit or account credit cannot be recorded as unapplied money...
+    1180  estimate.status: Approved, converted or sent estimates load as drafts.
+      14  payment.refund: A refund in the source was not loaded: it does not say which payment...
 ```
 
 `load` keeps a ledger beside the snapshot, source id to target id, and sends
-every create with an idempotency key derived from the source record. Kill it
-at any point and run it again: nothing is created twice and nothing is
-skipped. See [docs/loading.md](docs/loading.md).
+every create with an idempotency key derived from the source record and an
+`externalRef` naming it, which the target keeps. Kill it at any point and run
+it again: nothing is created twice and nothing is skipped. Lose the ledger
+and `load --rebuild-ledger` reads it back out of the target. See
+[docs/loading.md](docs/loading.md).
 
 ## How it works
 

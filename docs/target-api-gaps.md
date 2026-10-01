@@ -1,259 +1,320 @@
-# What the target API needs for a lossless load
+# What the target API takes, and what it still cannot
 
 `load` writes into OpenTradesOS only through its public HTTP API
 (`/api/v1`, a connected-app bearer token), never its database. That is
 deliberate: this toolkit has to work against any deployment, hosted or self
 hosted, and the API is the only surface that promises the same behaviour on
 all of them. It also means every service rule (the ledger postings, the job
-lifecycle, the audit trail) applies to migrated data exactly as it does to
-data typed in by hand.
+lifecycle, the audit trail, who may back-date what) applies to migrated data
+exactly as it does to data typed in by hand.
 
 The cost is that wherever the source has a fact and the API cannot accept
 it, the fact does not arrive. This file lists every such place found while
 writing the loader against the contracts in
-`packages/api/src/contracts/*.ts` and the services behind them. The loader
-does not fake any of them. It loads what the API accepts, and counts every
-record that lost something against the gap that lost it, so the load and
-dryrun reports say "38 invoices lost their historical issue date" rather than
-nothing. The codes below are the ones those reports print, from
-`src/load/gaps.ts`.
+`packages/api/src/contracts/*.ts` and the services behind them, and what has
+happened to each since. The loader does not fake any of them. It loads what
+the API accepts, and counts every record that lost something against the gap
+that lost it, so the load and dryrun reports say "38 invoices lost their tax"
+rather than nothing. The codes are the ones those reports print, from
+`src/load/gaps.ts`, where each carries the same status as here.
 
-They are ordered by how much they cost a migrating company.
+Most of the list was closed in the core on `claude/eager-hamilton-92klqv`
+(commits named beside each). A closed gap stays listed so that an older
+report still explains itself; the loader never counts a record against one.
+
+## Status at a glance
+
+| Gap | Status | Now |
+|---|---|---|
+| `external-id` | **closed** | `externalRef` on every create, 409 naming the record on a repeat, filterable on every list (ca51de1) |
+| `invoice.issued_on`, `ledger.dates` | **closed** | `issuedOn` and `receivedAt` date the postings (cfa5dc8) |
+| `job.completed_at` | **closed** | `completedAt` with the move to completed (cfa5dc8) |
+| `job.number`, `invoice.number`, `estimate.number` | **closed** | `number` on create (ca51de1) |
+| `document.number_taken` | open | a number the target already uses is refused; the document takes the next one |
+| `invoice.tax` | partly | per-line `taxRate` and `taxAmount` (4745ce4); lost only where no taxable line can carry it within a cent |
+| `invoice.totals` | **closed** | `adjustment` and `expectedTotals` (4745ce4) |
+| `invoice.reprice` | **closed** | `priceAsGiven` (4745ce4) |
+| `invoice.item_unlinked` | open | a line whose price book item did not load is not linked |
+| `payment.unapplied` | **closed** | `allocations: []` holds the money as `unappliedAmount` (eec32cf) |
+| `payment.refund` | partly | `POST /v1/payments/{id}/refunds` (19c6140); a source rarely says which payment a refund gave back |
+| `read.payments` | **closed** | `GET /v1/payments` (6d06c0f) |
+| `user.create`, `user.unmapped` | partly | `GET /v1/people` (6d06c0f); nobody can be created, and a person without a login cannot be recorded |
+| `job.job_type` | partly | `GET /v1/job-types` (6d06c0f); none can be created |
+| `visit.cancelled`, `visit.unscheduled` | **closed** | `status: "cancelled"`, and a window of both ends or neither (19c6140) |
+| `visit.idempotency` | **closed** | `addVisit` honours the key (0a77904) |
+| `attachments.upload` | **closed** | `POST /v1/attachments` (32130f0) |
+| `attachments.unattachable` | open | six kinds of record, 20 MB, images and PDF only |
+| `estimate.dates` | partly | `issuedOn` (cfa5dc8); no sent, viewed or decided date |
+| `estimate.tax` | partly | per-line `taxRate` (4745ce4); no stated amount |
+| `estimate.status` | open | no historical approval |
+| `estimate.reprice` | open | no `priceAsGiven` on an estimate line |
+| `history.future` | open, by design | the target refuses a date after today |
+| `recurring.*` | open | see Recurring work |
+| `contact.create`, `equipment.create` | open | no route |
+| `customer.notes`, `customer.billing_incomplete`, `customer.contact_invalid` | open | |
+| `property.coordinates`, `pricebook.code` | open | |
+
+## What the token must hold
+
+History is recorded, not made, and recording it is also how books are
+cooked, so the core gates it behind one permission, **`data:import`**: a
+business date more than seven days back (an invoice's `issuedOn`, a
+payment's `receivedAt`, a refund's `refundedAt`, a job's `completedAt`), a
+source document `number`, a line's `taxRate`, `taxAmount` or `priceAsGiven`.
+Only the owner preset holds it, so only an owner can give it to the
+migration's app. Without it each of those is a 403 `Missing permission:
+data:import`. `load` asks before its first write, with an invoice the target
+refuses either way and stores nothing from, and stops at once if the answer
+is no.
+
+The app also needs the **`all` scope** on customers, jobs, estimates and
+invoices. With a narrower one, a list returns only some records and none of
+the app's own, so nothing loaded could be found again or reconciled. `load`
+checks after the first record of each kind that it can see it, and stops if
+it cannot.
+
+Nothing posts into a **closed accounting period**, whoever asks: an invoice,
+payment or refund dated inside one is a 409 against that record. Reopen the
+period first, or leave that history out.
+
+Back-dated invoices, payments and completions emit no domain events, so no
+"your invoice is ready" goes out about 2021. Undated creates (customers,
+jobs, visits) do: **pause automations that message customers on "created"
+events** for the length of the migration.
 
 ## Money
 
-### `invoice.tax`: tax as applied cannot be carried
+### `invoice.tax`: partly closed
 
-`POST /v1/invoices` takes no tax rate or tax amount per line, and the
-service sets `taxRate: "0"` on every line ("resolved per jurisdiction in
-phase 5"). Client-supplied totals are ignored. A historical invoice that
-charged $26.24 of sales tax loads $26.24 short, and its balance is wrong by
-the same amount once its payment is applied.
+Was: every line taxed at zero and client totals ignored, so an invoice that
+charged $26.24 of sales tax loaded $26.24 short.
 
-**Needed:** a per-line `taxRate` and `taxAmount` accepted as-applied on
-create, at least for an import-scoped caller, so the frozen rate the
-contract already promises on `InvoiceLine` can come from the source.
+Now (4745ce4): a line takes `taxRate` and `taxAmount` as another system
+charged them, a stated amount accepted only within a cent of its rate on the
+line's net. The loader sends, in order of how much of the source it keeps:
+the source's own per-line tax where it itemised one that adds up; otherwise
+the one rate that reproduces the invoice's tax under the target's own
+arithmetic (each line at four places, rounded once per document), which is
+what nearly every invoice actually was; otherwise the nearest rate with the
+few cents it misses by stated across the taxable lines, each within a cent.
 
-**Meanwhile:** `--carry-totals` adds a non-taxable line named "Sales tax as
-applied on <source> invoice #N". The totals then reconcile to the cent, at the
-cost of tax being recorded as a line item. Off by default.
+Still lost: tax on an invoice with no taxable line to carry it, or so far from
+any rate on a single large line that no line can carry it within a cent. Those
+are counted here. `--carry-totals` puts that tax in the invoice's adjustment
+instead, so the total still matches, at the cost of recording tax as a line.
 
-### `invoice.totals`: the total is recomputed from lines
+### `invoice.totals`: closed
 
-Same route. When the source's lines do not add up to its subtotal (an
-invoice-level discount, a manual adjustment, or lines the source API
-truncated), the target's total differs. A line whose own total is below
-quantity times price does travel as `discountAmount`; an invoice-level
-difference has nowhere to go.
+Was: the total was recomputed from lines, so an invoice-level discount, a
+manual adjustment or lines a source API truncated loaded at a different total.
 
-**Needed:** an invoice-level adjustment or discount field on create.
+Now (4745ce4): one invoice-level `adjustment` (negative is a discount, posted
+to contra revenue), and `expectedTotals`, which refuses any invoice whose
+computed total differs from it by a cent. The loader predicts the target's
+totals with the same arithmetic (`src/target/totals.ts`), sends the
+difference from the source's total as the adjustment ("Not itemised on jobber
+invoice #2202", "Discount on ..."), and sends the source's totals as the cross
+check. An invoice that would load at a different total from the one the
+customer was sent is refused rather than stored.
 
-**Meanwhile:** `--carry-totals` adds a line named "Not itemised on <source>
-invoice #N" for the difference.
+### `invoice.issued_on` and `ledger.dates`: closed
 
-### `invoice.issued_on` and `ledger.dates`: everything is dated today
+Was: everything issued and posted on the day of the load; ten years of
+revenue in one period and every invoice "current" on the aging report.
 
-`POST /v1/invoices` stamps `issuedOn` with today's date, and both it and
-`POST /v1/payments` post to the ledger with `occurredAt: new Date()`. Ten
-years of invoices arrive issued on the day of the cutover, AR aging puts all
-of them in "current", and ten years of revenue and cash land in one
-accounting period. `recordPayment` does accept `receivedAt`, and the loader
-sends it, but the ledger posting ignores it.
+Now (cfa5dc8): `issuedOn` on invoices and estimates, and the ledger postings
+for invoices, payments and refunds dated by `issuedOn`, `receivedAt` and
+`refundedAt`. Sent. A date in the future is refused by the target and left
+off by the loader (`history.future`).
 
-**Needed:** `issuedOn` on invoice create, and the ledger posting dated from
-`issuedOn` / `receivedAt` rather than the wall clock.
+### `payment.unapplied`: closed
 
-**Meanwhile:** the source's number and issue date are written into the
-invoice `memo` ("Migrated from jobber invoice #2201, issued 2023-09-21.").
+Was: a payment with no allocations paid the customer's oldest invoices, so a
+deposit taken last week settled an invoice from 2021, and the loader did not
+send one.
 
-### `payment.unapplied`: a deposit cannot be recorded
+Now (eec32cf): omitted allocations still mean oldest first, and an empty list
+means applied to nothing, held for the customer as a liability and returned as
+`unappliedAmount`. The loader always sends an explicit list, empty included,
+so deposits and credits load. Reconcile reports how much is held.
 
-`POST /v1/payments` with no `allocations` (or an empty array) applies the
-money to the customer's oldest open invoices. There is no way to record a
-payment held unapplied: a deposit on unstarted work, or an account credit.
-`POST /v1/deposits` only *requests* a deposit. Sending such a payment would
-silently pay an invoice from 2021 with a deposit taken last week, so the
-loader does not send it; it is reported, with its amount.
+### `payment.refund`: partly closed
 
-**Needed:** either an explicit `allocations: []` meaning "hold unapplied",
-or a way to record a deposit as already received (`receivedAt`, `amount`)
-against a customer or job.
+Now (19c6140): `POST /v1/payments/{id}/refunds` records a refund paid by
+hand, out of held money first and then reopening what the payment paid.
 
-### `payment.refund`: refunds and reversals cannot be recorded
+Still lost: a source records a refund as a negative payment and almost never
+says which payment it gave back. The loader records one only where the answer
+is forced: exactly one of the customer's loaded payments was received on or
+before it, is at least as large, and paid every invoice the refund names. Any
+other refund is reported, with how many payments could have been the one.
 
-`POST /v1/payments/{paymentId}/refund` refunds through the processor and
-refuses money that did not arrive through one. A historical cheque refund or
-a negative adjustment in the source has no route.
+### `invoice.reprice`: closed
 
-**Needed:** a way to record a historical refund against a recorded payment.
+Was: a line linked to the price book was re-priced at today's price, so
+historical lines were not linked.
 
-### `invoice.reprice`: linking a line to the price book re-prices it
+Now (4745ce4): `priceAsGiven: true` links the item and keeps the line's own
+name, price and taxability. Sent. A line whose item did not load is left
+unlinked (`invoice.item_unlinked`).
 
-When a line names `priceBookItemId`, the service replaces its `unitPrice`
-with the price book item's CURRENT version (or a contract rate card's). For a
-new invoice that is the point. For a historical invoice it rewrites what the
-customer was charged, so the loader never sends `priceBookItemId` on
-historical lines, and the link is lost.
+### `read.payments`: closed
 
-**Needed:** a price-as-given flag for import, or `priceBookItemVersionId`
-plus the line's own price accepted together.
-
-### `read.payments`: payments cannot be read back
-
-There is no `GET /v1/payments`. Reconcile reads invoices, customers and the
-rest back from the target, but for payments it can only use the amounts the
-target confirmed when each was recorded. Allocated money is still verified,
-through `amountPaid` on the invoices.
-
-**Needed:** `GET /v1/payments`, filterable by customer, with allocations.
+Now (6d06c0f): `GET /v1/payments`, with allocations, `refundedAmount` and
+`unappliedAmount`. `reconcile --target` reads payments back rather than
+trusting what the target said when each was recorded.
 
 ## Identity
 
-### `external-id`: no field carries the source id
+### `external-id`: closed
 
-No create route has a place for "this record was Jobber client
-Z2lkOi8vSm9iYmVy...". The only map from source id to target id is the
-loader's local ledger. A customer support question in two years ("where did
-Jobber invoice 2201 go") can be answered from the memo on invoices and
-payments, and from nothing on customers, properties or jobs.
+Was: the only map from a source id to what it became was a file on the laptop
+that ran the migration.
 
-**Needed:** an `externalRef` (`{ system, id }`) on every create, stored,
-returned and filterable on list. It would also let reconcile find migrated
-records without the ledger.
+Now (ca51de1): every importable create takes `externalRef: { source, id }`,
+unique per company and kind of record; a second create for it is a 409 naming
+the record it became; every read returns it; every list finds by it
+(`externalSource`, `externalId`). The loader sends it on every create, visits
+included (as `<job id>#<visit id>`), adopts the record a 409 names, and
+`load --rebuild-ledger` rebuilds a lost ledger from the target.
 
-### `job.number`, `invoice.number`, `estimate.number`
+The `source` is the source system and eight characters of the ledger
+namespace, `jobber.3fa9c2d1`, not the bare name. Two exports whose ids
+overlap (two spreadsheets that both start at C-1, two companies merging into
+one tenant) would otherwise adopt each other's records. The load report
+prints it.
 
-The target assigns the next number in its own sequence. Customers know
-their invoices by number. The invoice memo keeps it; jobs and estimates lose
-it.
+### `job.number`, `invoice.number`, `estimate.number`: closed
 
-**Needed:** an optional `number` on create for import, refused if taken,
-with the sequence advanced past the highest imported number.
+Now (ca51de1): an optional `number` on create, with `data:import`, refused if
+taken, and the next number always past the highest in use. Sent.
+
+### `document.number_taken`: open
+
+A company that used OpenTradesOS before migrating may already have invoice
+2201. The target refuses the number; the loader loads the document with the
+next number and counts it here.
 
 ## People
 
-### `user.create` and `user.unmapped`: technicians cannot be created or listed
+### `user.create` and `user.unmapped`: partly closed
 
-There is no route to create, invite or list users or memberships (only
-`POST /v1/memberships/{id}/active`). Creating logins is rightly not a
-migration's decision, but without a list endpoint the operator has to copy
-every technician's target user id into `mapping.json` by hand. A technician
-left unmapped is dropped from every visit they worked.
+Now (6d06c0f): `GET /v1/people` lists everyone with their technician id.
+`map --target` proposes a technician for every source user an email, or
+failing that a name, picks out exactly once.
 
-**Needed:** `GET /v1/people` (id, name, email, active) so `map` can match by
-email and propose the mapping, and ideally a way to record a historical,
-non-login person so a technician who left in 2019 can still be on their
-visits.
+Still open: no route creates a person, rightly (who may log in is not a
+migration's decision), and a technician who left in 2019 and never had a
+login here cannot be recorded, so their visits name nobody.
 
-### `job.job_type`
+### `job.job_type`: partly closed
 
-`jobTypeId` must be a target id and no route lists or creates job types.
-
-**Needed:** `GET /v1/job-types`.
+Now (6d06c0f): `GET /v1/job-types`, and `map --target` proposes matches by
+name or code. A type the target does not have must be made there first.
 
 ## Work
 
-### `visit.cancelled`
+### `visit.cancelled` and `visit.unscheduled`: closed
 
-No route records a visit as cancelled. Loading one as scheduled would send
-a technician to a customer who declined, so cancelled visits are not loaded.
+Now (19c6140): `status: "cancelled"` on `POST /v1/jobs/{id}/visits` records
+the visit, dispatches nobody and does not hold the job open; and the window is
+both ends or neither, neither being a visit nobody timed, kept unassigned. The
+loader sends both. (A source's "no show" is recorded as cancelled: the target
+has one word for a visit that did not go ahead.)
 
-**Needed:** a `status` on `POST /v1/jobs/{id}/visits` for historical
-visits, or a cancel route.
+### `visit.idempotency`: closed
 
-### `visit.unscheduled`
+Now (0a77904): adding a visit honours the Idempotency-Key. The loader sends
+one per visit, and reads a job back only to adopt visits a lost ledger forgot,
+by externalRef.
 
-`POST /v1/jobs/{id}/visits` and the inline `visit` on `POST /v1/jobs`
-require both `windowStart` and `windowEnd`. A source visit with no time
-cannot exist. A visit with a start and no end loads with a zero-length window
-rather than an invented hour.
+### `job.completed_at`: closed
 
-### `visit.idempotency`: declared idempotent, not idempotent
-
-`scheduleVisit` is declared `idempotent: true` in the contract, but
-`services/jobs.ts addVisit` never reads the Idempotency-Key, so a retried
-call adds a second visit. Nothing is lost: the loader reads the job back and
-adopts a visit already there at the same window before adding one. It costs
-a GET per resumed job, and any other client retrying this route makes
-duplicates.
-
-**Needed:** honour the key in `addVisit`, as every create does.
-
-### `job.completed_at`
-
-`PATCH /v1/jobs/{id}` with `status: "completed"` stamps `completedAt` as
-now. Where the job has completed visits, the loader completes them through
-`POST /v1/visits/{id}/complete` with `completedOfflineAt` set to the source's
-completion time, which carries the real date. A job completed with no
-completed visit gets today.
-
-**Needed:** an optional `completedAt` on the status update.
+Now (cfa5dc8): `PATCH /v1/jobs/{id}` takes `completedAt` with the move to
+completed. Sent when no completed visit carries the date.
 
 ## Estimates
 
-### `estimate.status`
+### `estimate.status`: open
 
-An approved, sent or converted estimate loads as a draft.
-`POST /v1/estimates/{id}/approve` exists but requires a signer name and
-`capturedVia` (in person, phone, email, text), and inventing how a customer
-said yes years ago would fabricate a record. Declined estimates are recorded
-through `POST /v1/estimates/{id}/decline`.
+An approved, sent or converted estimate loads as a draft. Recording an
+approval needs a signer and how they said yes, and inventing those would
+fabricate a record. Declined estimates are recorded as declined.
 
-**Needed:** a historical status (with its date) on create for import.
+### `estimate.dates`: partly closed
 
-### `estimate.dates` and `estimate.tax`
+`issuedOn` is sent (cfa5dc8). When it was sent, viewed or decided cannot be.
 
-No issued or sent date on create, and one `taxRate` for the whole estimate
-with tax recomputed from it. Deriving a rate from the source's tax amount
-would be recomputing what the source recorded, so it is not done.
+### `estimate.tax`: partly closed
 
-## Customers and properties
+Lines take their own `taxRate` (4745ce4), but an estimate takes no stated
+amount, so the loader sends the one rate that reproduces the source's tax;
+an estimate no rate reproduces loads without tax.
 
-### `customer.notes`
+### `estimate.reprice`: open
 
-`POST /v1/customers` has no notes field. Free-text notes are not carried.
+An estimate line linked to the price book is re-priced, and there is no
+`priceAsGiven` for estimates, so estimate lines are not linked.
 
-### `customer.billing_incomplete` and `customer.contact_invalid`
+## Recurring work
 
-`billingAddress` is all-or-nothing (line1, city, state, postal code), and an
-email must be a valid address. Rather than lose the customer, the loader
-leaves the field off and reports it.
+`POST /v1/recurring-schedules` exists and the loader uses it, carefully: the
+target books a schedule's work from its start date, not from today, so a
+weekly rule that started in 2021 would put five years of past visits on the
+board. A repeating schedule is therefore started at its next occurrence (the
+source's, or the first one on or after today on the source's cadence). Work
+counted from completion records the last completion. Skipped, moved and
+cancelled occurrences are recorded. The route takes no externalRef and reads
+no Idempotency-Key, so a schedule a crashed run made is found again by what
+it is.
 
-### `property.coordinates`
+| Gap | What is lost |
+|---|---|
+| `recurring.inactive` | An ended, cancelled or paused schedule: the target cannot create one that is not running. Its history is the jobs, which load |
+| `recurring.rule` | A rule it cannot repeat: every 5 months, the second Tuesday, months counted from completion |
+| `recurring.anchor_day` | Months are pinned to the 15th; the source's day is not settable |
+| `recurring.occurrences` | Jobs the source booked from a schedule cannot be linked to it; a repeating one with any is created and then paused, so it does not book them again |
+| `recurring.agreement_terms` | A service agreement's price, billing frequency and visits per term |
+| `recurring.assignment` | The technicians and equipment a schedule names |
 
-`POST /v1/properties` has no latitude or longitude. Source geocodes are not
-carried; the target must geocode again.
+## Customers, properties and the rest
 
-### `pricebook.code`
-
-`POST /v1/pricebook/items` requires `code`. An item with none gets one
-derived from its name and source id (stable across runs).
+- `customer.notes`: no notes field.
+- `customer.billing_incomplete`, `customer.contact_invalid`: the billing
+  address is all or nothing and an email must be one. The field is left off
+  rather than the customer lost.
+- `contact.create`: no route creates a contact (a job's parties can name one).
+- `property.coordinates`: no latitude or longitude.
+- `equipment.create`: no route creates a customer's equipment; `/v1/assets`
+  is the company's own kit.
+- `pricebook.code`: required; an item with none gets one derived from its
+  name and source id, stable across runs.
 
 ## Attachments
 
-### `attachments.upload`
+### `attachments.upload`: closed
 
-There is no route a third party can use to upload a file and attach it to a
-record. The only upload path, `POST /v1/field/uploads/{clientId}`, accepts
-bytes for an upload a registered field device has already queued; driving it
-from a migration would mean impersonating a phone. `attachments` therefore
-downloads every file locally, hashes it, and writes an index naming the
-target record each belongs to, ready for the day this exists.
+Now (32130f0): `POST /v1/attachments` takes base64 bytes for a customer,
+property, job, visit, estimate or invoice. `attachments --target` attaches
+every downloaded file, with an Idempotency-Key per file.
 
-**Needed:** `POST /v1/attachments` taking `entityType`, `entityId`,
-`fileName` and base64 bytes (the same encoding the field route uses), with an
-Idempotency-Key.
+### `attachments.unattachable`: open
+
+Equipment has no route; the limit is 20 MB; the type is decided from the first
+bytes and must be PNG, JPEG, GIF, WebP, ICO, HEIC or PDF. Those files stay in
+the local folder, listed by `attachments`.
 
 ## Checked, and not a gap
 
 - **Idempotency keys are tenant scoped.** The services look keys up in
   `integration_event` without an `organization_id` filter, which reads like a
   cross-tenant leak. It is not: every table with an `organization_id` has row
-  level security (`db/sql/after.sql`), and services run inside `inTenant`,
-  which sets `app.organization_id`.
+  level security (`db/sql/after.sql`), and services run inside `inTenant`.
 - **Job status cannot be set freely.** It is walked through the lifecycle the
   service enforces (`REACHABLE` in `services/jobs.ts`), and the loader never
   walks a job backwards.
 - **A property shared by several customers** is supported:
   `POST /v1/properties/{id}/customers` links the second and later ones, and is
   naturally idempotent.
+- **Recording a schedule's completion backwards** is refused by the target,
+  and the loader treats that refusal on a re-run as "already recorded".

@@ -82,8 +82,9 @@ RRULE, or the source's own description). `job_ids` names jobs the source has
 already created for the schedule.
 
 Contacts, equipment and recurring schedules are extracted, profiled and
-carried in the snapshot. The loader does not write them yet; see
-[loading.md](loading.md#not-loaded-yet).
+carried in the snapshot. Recurring schedules load, started at their next
+occurrence; contacts and equipment do not, because the target has no route
+for either. See [loading.md](loading.md#not-loaded-and-why).
 
 ## Values
 

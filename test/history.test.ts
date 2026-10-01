@@ -19,6 +19,8 @@ import { readTarget } from "../src/target/read.js";
 import { reconcile, sourceSide } from "../src/reconcile/index.js";
 import type { EntityName } from "../src/canonical/index.js";
 import { load as fixture } from "./fixtures.js";
+import { readFileSync } from "node:fs";
+import { GAPS, type GapCode } from "../src/load/gaps.js";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "servicetitan");
 /** The day these tests run on, so the fixtures' dates stay history and their schedules stay running. */
@@ -105,6 +107,8 @@ describe("a migrated company keeps its history", () => {
       "recurring.agreement_terms", "recurring.assignment", "recurring.anchor_day", "contact.create", "equipment.create",
     ]));
     expect(report.entities.contact).toMatchObject({ skipped: 1 });
+    // Nothing is ever counted against a gap the core has closed.
+    expect((Object.keys(report.gaps) as GapCode[]).filter((code) => GAPS[code].status === "closed")).toEqual([]);
     expect(report.entities.equipment).toMatchObject({ skipped: 1 });
 
     // And it reconciles, the schedule counted.
@@ -345,5 +349,16 @@ describe("finding what was loaded, by where it came from", () => {
     expect(Ledger.memory("t", "housecall-pro", "acct").externalSource).toMatch(/^housecall-pro\.[0-9a-f]{8}$/);
     expect(Ledger.memory("t", "csv", "a").externalSource).not.toBe(Ledger.memory("t", "csv", "b").externalSource);
     expect(() => new TargetError(409, "x")).not.toThrow();
+  });
+});
+
+describe("the list of gaps", () => {
+  it("is the same list in the code and in docs/target-api-gaps.md, each closed one saying what closed it", () => {
+    const doc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "docs", "target-api-gaps.md"), "utf8");
+    for (const [code, gap] of Object.entries(GAPS)) {
+      const named = doc.includes(`\`${code}\``) || (code.startsWith("recurring.") && doc.includes("`recurring.*`"));
+      expect(named, code).toBe(true);
+      if (gap.status !== "open") expect((gap as { now?: string }).now, code).toBeTruthy();
+    }
   });
 });
