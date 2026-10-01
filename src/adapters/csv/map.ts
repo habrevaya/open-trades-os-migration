@@ -2,7 +2,8 @@ import * as money from "../../money/index.js";
 import type {
   CanonicalCustomer, CanonicalProperty, CanonicalJob, CanonicalInvoice, CanonicalPayment,
   CanonicalVisit, CanonicalInvoiceLine, CanonicalUser, CanonicalPriceBookItem,
-  CanonicalEstimate, CanonicalAttachment,
+  CanonicalEstimate, CanonicalAttachment, CanonicalEquipment, CanonicalContact,
+  CanonicalRecurringSchedule,
 } from "../../canonical/index.js";
 
 /**
@@ -93,15 +94,26 @@ export function date(value: unknown, settings: CsvSettings): string | undefined 
   const v = text(value);
   if (v === undefined) return undefined;
   if (/^\d{4}-\d{2}-\d{2}([T ][\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/.test(v)) return v.replace(" ", "T");
-  const slashed = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(v);
+  const slashed = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*([AaPp])\.?[Mm]\.?)?)?$/.exec(v);
   if (slashed) {
-    const [, a, b, year, hh, mm, ss] = slashed;
+    const [, a, b, year, hh, mm, ss, meridiem] = slashed;
     const [month, day] = settings.dateOrder === "MDY" ? [a!, b!] : [b!, a!];
     if (Number(month) < 1 || Number(month) > 12 || Number(day) < 1 || Number(day) > 31) {
       throw new Error(`Not a ${settings.dateOrder} date: ${JSON.stringify(value)}`);
     }
     const day10 = `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
-    return hh === undefined ? day10 : `${day10}T${hh.padStart(2, "0")}:${mm}:${ss ?? "00"}`;
+    if (hh === undefined) return day10;
+    // Spreadsheet exports from Windows desktop software (FieldEdge among
+    // them) write 3:41 PM. That is unambiguous, so it is read; 13:41 PM is
+    // not, so it is refused.
+    let hour = Number(hh);
+    if (meridiem) {
+      if (hour < 1 || hour > 12) throw new Error(`Not a 12-hour time: ${JSON.stringify(value)}`);
+      const pm = meridiem.toLowerCase() === "p";
+      hour = pm ? (hour % 12) + 12 : hour % 12;
+    }
+    if (hour > 23 || Number(mm) > 59) throw new Error(`Not a time of day: ${JSON.stringify(value)}`);
+    return `${day10}T${String(hour).padStart(2, "0")}:${mm}:${ss ?? "00"}`;
   }
   throw new Error(`Not a date this importer can read without guessing: ${JSON.stringify(value)}`);
 }
@@ -371,5 +383,146 @@ export function toAttachment(row: Row, settings: CsvSettings): CanonicalAttachme
     contentType: text(row["content_type"]),
     downloadUrl: url,
     localPath: path,
+  };
+}
+
+/**
+ * Equipment belongs to a property. The serial follows the furnace, not the
+ * owner.
+ *
+ * An `id` column is optional here, unlike everywhere else, because the
+ * equipment reports most systems export (FieldEdge's Equipment List among
+ * them) have none. Without one the id is derived from the property and what
+ * identifies the unit: manufacturer, model and serial, or the name when there
+ * is no serial. It is stable across re-exports of the same data and changes
+ * when any of those are edited, which is the honest answer for a file with
+ * no key; two identical units without serials at one property collide, and
+ * `profile` reports the duplicate rather than this guessing them apart.
+ */
+export function equipmentId(row: Row): string {
+  const explicit = text(row["id"]);
+  if (explicit) return explicit;
+  const norm = (v: unknown) => (text(v) ?? "").toLowerCase().replace(/\s+/g, " ");
+  const serial = norm(row["serial_number"]);
+  const parts = [
+    norm(row["property_id"]), norm(row["category"]), norm(row["manufacturer"]), norm(row["model"]),
+    serial, serial === "" ? norm(row["name"]) : "",
+  ];
+  return `derived:${parts.join("|")}`;
+}
+
+export function toEquipment(row: Row, settings: CsvSettings): CanonicalEquipment {
+  const category = text(row["category"]) ?? text(row["name"]);
+  if (!category) throw new Error("equipment row has neither a category nor a name");
+  const attributes: Record<string, unknown> = { ...customFields(row) };
+  const name = text(row["name"]);
+  if (name && name !== category) attributes["name"] = name;
+  return {
+    sourceSystem: SOURCE,
+    sourceId: equipmentId(row),
+    sourcePayload: row,
+    propertySourceId: required(row, "property_id", "equipment"),
+    category,
+    manufacturer: text(row["manufacturer"]),
+    model: text(row["model"]),
+    serialNumber: text(row["serial_number"]),
+    installedOn: date(row["installed_on"], settings),
+    warrantyPartsExpiresOn: date(row["warranty_parts_expires_on"], settings),
+    warrantyLaborExpiresOn: date(row["warranty_labor_expires_on"], settings),
+    attributes,
+  };
+}
+
+export function toContact(row: Row, settings: CsvSettings): CanonicalContact {
+  void settings;
+  const first = text(row["first_name"]);
+  const last = text(row["last_name"]);
+  const name = text(row["name"]) ?? ([first, last].filter(Boolean).join(" ") || text(row["email"]));
+  if (!name) throw new Error("contact row has no name, first_name, last_name or email");
+  return {
+    ...base(row, "contact"),
+    customerSourceId: required(row, "customer_id", "contact"),
+    propertySourceId: text(row["property_id"]),
+    name,
+    firstName: first,
+    lastName: last,
+    email: text(row["email"]),
+    phone: text(row["phone"]),
+    mobile: text(row["mobile"]),
+    role: text(row["role"]),
+    isPrimary: bool(row["primary"], false),
+    active: bool(row["active"], true),
+    notes: text(row["notes"]),
+  };
+}
+
+const MODELS = ["rule", "materialized-series", "anchored-to-completion", "manual-list"] as const;
+const UNITS = ["day", "week", "month", "year"] as const;
+const EXCEPTIONS = ["skipped", "moved", "cancelled"] as const;
+
+function oneOf<T extends string>(value: unknown, allowed: readonly T[], what: string): T | undefined {
+  const v = text(value)?.toLowerCase();
+  if (v === undefined) return undefined;
+  const singular = v.endsWith("s") && (allowed as readonly string[]).includes(v.slice(0, -1)) ? v.slice(0, -1) : v;
+  if (!(allowed as readonly string[]).includes(singular)) {
+    throw new Error(`${what} must be one of ${allowed.join(", ")}, not ${JSON.stringify(value)}`);
+  }
+  return singular as T;
+}
+
+/**
+ * A recurring schedule or service agreement, one row each, with skipped,
+ * moved and cancelled occurrences joined on from recurring_exceptions.csv.
+ *
+ * `model` is required and never defaulted: docs/recurring-schedules.md rule 1
+ * is that an adapter never silently invents a schedule, and choosing the
+ * model is the decision that rule is about.
+ */
+export function toRecurringSchedule(row: Row, settings: CsvSettings): CanonicalRecurringSchedule {
+  const model = oneOf(row["model"], MODELS, "recurring schedule model");
+  if (!model) throw new Error(`recurring schedule row has no model; it must say which of ${MODELS.join(", ")} the source used`);
+  const kind = (text(row["kind"]) ?? "recurring-job").toLowerCase();
+  if (kind !== "recurring-job" && kind !== "service-agreement") {
+    throw new Error(`recurring schedule kind must be recurring-job or service-agreement, not ${JSON.stringify(row["kind"])}`);
+  }
+  const interval = int(row["interval"]);
+  if (interval !== undefined && interval < 1) throw new Error(`interval must be at least 1, not ${interval}`);
+  const exceptions = (Array.isArray(row["exceptions"]) ? (row["exceptions"] as Row[]) : []).map((e) => {
+    const on = date(e["on"], settings);
+    if (!on) throw new Error("recurring exception row has no date in on");
+    const exceptionKind = oneOf(e["kind"], EXCEPTIONS, "recurring exception kind");
+    if (!exceptionKind) throw new Error("recurring exception row has no kind");
+    return {
+      on,
+      kind: exceptionKind,
+      movedTo: date(e["moved_to"], settings),
+      notes: text(e["notes"]),
+    };
+  });
+  return {
+    ...base(row, "recurring schedule"),
+    kind,
+    model,
+    customerSourceId: required(row, "customer_id", "recurring schedule"),
+    propertySourceId: text(row["property_id"]),
+    name: text(row["name"]) ?? text(row["job_type"]) ?? "Recurring work",
+    description: text(row["description"]),
+    status: text(row["status"]) ?? "active",
+    rule: text(row["rule"]),
+    intervalUnit: oneOf(row["interval_unit"], UNITS, "interval_unit"),
+    interval,
+    anchorOn: date(row["anchor_on"], settings),
+    startsOn: date(row["starts_on"], settings),
+    endsOn: date(row["ends_on"], settings),
+    nextOccurrenceOn: date(row["next_occurrence_on"], settings),
+    visitsPerTerm: int(row["visits_per_term"]),
+    price: text(row["price"]) === undefined ? undefined : amount(row["price"], settings),
+    billingFrequency: text(row["billing_frequency"]),
+    jobType: text(row["job_type"]),
+    technicianSourceIds: listOf(row["technician_ids"]),
+    equipmentSourceIds: listOf(row["equipment_ids"]),
+    jobSourceIds: listOf(row["job_ids"]),
+    exceptions,
+    customFields: customFields(row),
   };
 }

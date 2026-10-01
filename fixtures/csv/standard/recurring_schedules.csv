@@ -1,0 +1,3 @@
+id,customer_id,property_id,kind,model,name,status,rule,interval_unit,interval,anchor_on,starts_on,ends_on,next_occurrence_on,visits_per_term,price,billing_frequency,job_type,equipment_ids,job_ids
+R-1,C-100,P-1,service-agreement,rule,Comfort Club,active,FREQ=MONTHLY;INTERVAL=6;BYMONTHDAY=14,month,6,03/14/2023,03/14/2023,03/13/2026,09/14/2025,2,$189.00,annual,Maintenance,E-1,J-1
+R-2,C-200,P-3,recurring-job,anchored-to-completion,Quarterly backflow test,active,,month,3,,,,,,,,Inspection,,J-2

@@ -27,6 +27,26 @@ export interface ExtractContext {
   checkpoint(entity: EntityName, cursor: string): Promise<void>;
   resume(entity: EntityName): Promise<string | undefined>;
   log(message: string): void;
+  /**
+   * Read back what this extraction has already written. Optional, because a
+   * context that only appends is enough for most adapters; one that has to
+   * join one entity onto another (ServiceM8 keeps a client's email on its
+   * contacts) uses it to rebuild that join after a resume instead of holding
+   * it across runs or fetching it twice.
+   */
+  records?<T = unknown>(entity: EntityName): AsyncIterable<T>;
+}
+
+/**
+ * A field the source has, or appears to have, that this adapter does not
+ * carry, and why. Listed by `sources` so the operator knows before extracting
+ * rather than after loading. Where the documented meaning of a field is
+ * uncertain, it goes here instead of being guessed at.
+ */
+export interface Unsupported {
+  /** `entity.field` in the source's own terms, e.g. `job.SubTotal`. */
+  field: string;
+  reason: string;
 }
 
 export interface SourceCapabilities {
@@ -58,6 +78,9 @@ export interface SourceCapabilities {
 
   /** Documented limits worth warning the operator about before they start. */
   knownLimits: string[];
+
+  /** Source fields deliberately not carried. See `Unsupported`. */
+  unsupported?: Unsupported[];
 }
 
 export interface SourceAdapter {

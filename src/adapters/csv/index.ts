@@ -40,6 +40,8 @@ const PLAN: FilePlan[] = [
   { entity: "user", file: "users" },
   { entity: "customer", file: "customers" },
   { entity: "property", file: "properties" },
+  { entity: "contact", file: "contacts" },
+  { entity: "equipment", file: "equipment" },
   { entity: "priceBookItem", file: "price_book" },
   {
     entity: "estimate", file: "estimates",
@@ -48,6 +50,10 @@ const PLAN: FilePlan[] = [
   {
     entity: "job", file: "jobs",
     child: { name: "visits", file: "visits", foreignKey: "job_id", field: "visits" },
+  },
+  {
+    entity: "recurringSchedule", file: "recurring_schedules",
+    child: { name: "recurring_exceptions", file: "recurring_exceptions", foreignKey: "schedule_id", field: "exceptions" },
   },
   {
     entity: "invoice", file: "invoices",
@@ -70,6 +76,7 @@ export const capabilities: SourceCapabilities = {
     "Child files (invoice lines, visits, payment allocations, estimate lines) are held in memory while their parent file streams. Fine for hundreds of thousands of rows; split a larger export by year.",
     "A spreadsheet has no recurrence. Repeating work arrives as whatever rows were exported, and any schedule has to be rebuilt by a person.",
     "Dates written as 03/04/2024 are read month first unless columns.json says DMY. Anything that is neither ISO nor slashed is refused, not guessed.",
+    "Recurring schedules come only from recurring_schedules.csv, which says which recurrence model the source used. Nothing is inferred from repeating jobs.",
   ],
 };
 
@@ -87,6 +94,26 @@ export interface ColumnConfig {
   cents?: boolean;
   dateOrder?: "MDY" | "DMY";
   delimiter?: string;
+}
+
+/**
+ * A preset is a columns.json shipped with the toolkit for one source's
+ * exports (FieldEdge's, for example). The operator's own columns.json is laid
+ * over it, file by file and column by column, so fixing one header an export
+ * spells differently does not mean restating the whole preset.
+ */
+export function mergeConfig(preset: ColumnConfig, own: ColumnConfig): ColumnConfig {
+  const files: NonNullable<ColumnConfig["files"]> = { ...(preset.files ?? {}) };
+  for (const [name, entry] of Object.entries(own.files ?? {})) {
+    const base = files[name] ?? {};
+    files[name] = {
+      ...base,
+      ...entry,
+      columns: { ...(base.columns ?? {}), ...(entry.columns ?? {}) },
+    };
+  }
+  const merged: ColumnConfig = { ...preset, ...own, files };
+  return merged;
 }
 
 export async function readConfig(dir: string, explicit?: string): Promise<ColumnConfig> {
@@ -170,11 +197,30 @@ function settingsOf(row: Row): CsvSettings {
   };
 }
 
-export function createCsvAdapter(): SourceAdapter {
+export interface CsvAdapterOptions {
+  id?: string;
+  displayName?: string;
+  /** Written as `sourceSystem` on every canonical record. Defaults to the id. */
+  sourceSystem?: string;
+  /** Built-in columns.json for one source's exports; the operator's own is laid over it. */
+  preset?: ColumnConfig;
+  capabilities?: SourceCapabilities;
+}
+
+export function createCsvAdapter(options: CsvAdapterOptions = {}): SourceAdapter {
+  const id = options.id ?? "csv";
+  const sourceSystem = options.sourceSystem ?? id;
+  const configFor = async (dir: string, explicit?: string): Promise<ColumnConfig> =>
+    options.preset ? mergeConfig(options.preset, await readConfig(dir, explicit)) : readConfig(dir, explicit);
+  const stampSource = (produced: unknown): unknown => {
+    if (sourceSystem === "csv") return produced;
+    const restamp = (r: unknown) => (r && typeof r === "object" ? { ...(r as Record<string, unknown>), sourceSystem } : r);
+    return Array.isArray(produced) ? produced.map(restamp) : restamp(produced);
+  };
   return {
-    id: "csv",
-    displayName: "Generic CSV",
-    capabilities,
+    id,
+    displayName: options.displayName ?? "Generic CSV",
+    capabilities: options.capabilities ?? capabilities,
 
     /**
      * `credentials` here are a directory and an optional column mapping,
@@ -186,7 +232,7 @@ export function createCsvAdapter(): SourceAdapter {
       const dir = credentials["dir"];
       if (!dir) return { ok: false, error: "No directory. Pass --from <dir>." };
       try {
-        const config = await readConfig(dir, credentials["columns"]);
+        const config = await configFor(dir, credentials["columns"]);
         const customers = fileFor(dir, config, "customers");
         if (!(await exists(customers))) {
           return { ok: false, error: `No customer file at ${customers}. Every other file is optional; this one is not.` };
@@ -199,7 +245,7 @@ export function createCsvAdapter(): SourceAdapter {
 
     async *extract(credentials, ctx: ExtractContext) {
       const dir = credentials["dir"] ?? ".";
-      const config = await readConfig(dir, credentials["columns"]);
+      const config = await configFor(dir, credentials["columns"]);
       const stamp = settingsFrom(config);
 
       for (const plan of PLAN) {
@@ -280,23 +326,29 @@ export function createCsvAdapter(): SourceAdapter {
     },
 
     toCanonical(entity, raw) {
-      const row = raw as Row;
-      const settings = settingsOf(row);
-      switch (entity) {
-        case "user": return map.toUser(row, settings);
-        case "customer": return map.toCustomer(row, settings);
-        case "property": return map.toProperty(row, settings);
-        case "priceBookItem": return map.toPriceBookItem(row, settings);
-        case "estimate": return map.toEstimate(row, settings);
-        case "job": return map.toJob(row, settings);
-        case "invoice": return map.toInvoice(row, settings);
-        case "payment": return map.toPayment(row, settings);
-        case "attachment": return map.toAttachment(row, settings);
-        default:
-          throw new Error(`Generic CSV adapter has no canonical mapping for "${entity}"`);
-      }
+      return stampSource(mapRow(entity, raw as Row));
     },
   };
+}
+
+function mapRow(entity: EntityName, row: Row): unknown {
+  const settings = settingsOf(row);
+  switch (entity) {
+    case "user": return map.toUser(row, settings);
+    case "customer": return map.toCustomer(row, settings);
+    case "property": return map.toProperty(row, settings);
+    case "priceBookItem": return map.toPriceBookItem(row, settings);
+    case "estimate": return map.toEstimate(row, settings);
+    case "job": return map.toJob(row, settings);
+    case "invoice": return map.toInvoice(row, settings);
+    case "payment": return map.toPayment(row, settings);
+    case "attachment": return map.toAttachment(row, settings);
+    case "equipment": return map.toEquipment(row, settings);
+    case "contact": return map.toContact(row, settings);
+    case "recurringSchedule": return map.toRecurringSchedule(row, settings);
+    default:
+      throw new Error(`Generic CSV adapter has no canonical mapping for "${entity}"`);
+  }
 }
 
 export const csv: SourceAdapter = createCsvAdapter();

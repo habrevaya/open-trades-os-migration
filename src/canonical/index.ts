@@ -77,6 +77,83 @@ export const CanonicalEquipment = Provenance.extend({
   attributes: z.record(z.unknown()).default({}),
 });
 
+/**
+ * A person at a customer who is not the customer: the tenant who lets the
+ * technician in, the property manager who approves the quote, the accounts
+ * payable clerk who pays the invoice.
+ *
+ * The customer keeps its own email and phone. Contacts are everyone else, and
+ * the one flagged primary is usually who the customer's email and phone were
+ * copied from, so a migration that drops contacts drops the only way to reach
+ * the right person at most commercial accounts.
+ */
+export const CanonicalContact = Provenance.extend({
+  customerSourceId: z.string(),
+  propertySourceId: z.string().optional(),
+  name: z.string(),
+  firstName: z.string().optional(),
+  lastName: z.string().optional(),
+  email: z.string().optional(),
+  phone: z.string().optional(),
+  mobile: z.string().optional(),
+  /** As the source names it: BILLING, JOB, Property Manager, Tenant. Not normalised. */
+  role: z.string().optional(),
+  isPrimary: z.boolean().default(false),
+  active: z.boolean().default(true),
+  notes: z.string().optional(),
+});
+
+/**
+ * A recurring schedule or service agreement. See docs/recurring-schedules.md,
+ * whose rules this shape exists to enforce.
+ *
+ * `model` says which of the four recurrence models the source used, because
+ * the same "every six months" means different things under each. A rule
+ * carries its rule; an anchored schedule carries what it is anchored to; a
+ * materialized series carries the jobs that already exist. Nothing here is
+ * inferred by an adapter: a field the source did not state is absent, and
+ * `profile` says so.
+ *
+ * `kind` separates a maintenance agreement (a contract, often prepaid, with a
+ * term and a number of visits) from a plain repeating job. Both repeat; only
+ * one is money already collected for work not yet done.
+ */
+export const RecurrenceException = z.object({
+  on: z.string(),
+  kind: z.enum(["skipped", "moved", "cancelled"]),
+  movedTo: z.string().optional(),
+  notes: z.string().optional(),
+});
+
+export const CanonicalRecurringSchedule = Provenance.extend({
+  kind: z.enum(["recurring-job", "service-agreement"]).default("recurring-job"),
+  model: z.enum(["rule", "materialized-series", "anchored-to-completion", "manual-list"]),
+  customerSourceId: z.string(),
+  propertySourceId: z.string().optional(),
+  name: z.string(),
+  description: z.string().optional(),
+  status: z.string(),
+  /** The rule as the source wrote it (an RRULE, or the source's own words). Never rewritten. */
+  rule: z.string().optional(),
+  intervalUnit: z.enum(["day", "week", "month", "year"]).optional(),
+  interval: z.number().int().positive().optional(),
+  /** What the interval counts from. For anchored-to-completion, the last completion. */
+  anchorOn: z.string().optional(),
+  startsOn: z.string().optional(),
+  endsOn: z.string().optional(),
+  nextOccurrenceOn: z.string().optional(),
+  visitsPerTerm: z.number().int().optional(),
+  price: Money.optional(),
+  billingFrequency: z.string().optional(),
+  jobType: z.string().optional(),
+  technicianSourceIds: z.array(z.string()).default([]),
+  equipmentSourceIds: z.array(z.string()).default([]),
+  /** Occurrences the source already materialized as jobs. */
+  jobSourceIds: z.array(z.string()).default([]),
+  exceptions: z.array(RecurrenceException).default([]),
+  customFields: z.record(z.unknown()).default({}),
+});
+
 export const CanonicalVisit = z.object({
   sourceId: z.string(),
   sequence: z.number().int().default(1),
@@ -247,9 +324,27 @@ export type CanonicalUser = z.infer<typeof CanonicalUser>;
 export type CanonicalPriceBookItem = z.infer<typeof CanonicalPriceBookItem>;
 export type CanonicalEstimate = z.infer<typeof CanonicalEstimate>;
 export type CanonicalEstimateOption = z.infer<typeof CanonicalEstimateOption>;
+export type CanonicalContact = z.infer<typeof CanonicalContact>;
+export type CanonicalRecurringSchedule = z.infer<typeof CanonicalRecurringSchedule>;
 
 export const ENTITY_ORDER = [
   "user", "customer", "property", "contact", "equipment", "priceBookItem",
-  "estimate", "job", "invoice", "payment", "membership", "attachment",
+  "estimate", "job", "recurringSchedule", "invoice", "payment", "membership", "attachment",
 ] as const;
+
+/** The schema for each entity a record can be checked against, where there is one. */
+export const SCHEMAS: Partial<Record<(typeof ENTITY_ORDER)[number], z.ZodTypeAny>> = {
+  user: CanonicalUser,
+  customer: CanonicalCustomer,
+  property: CanonicalProperty,
+  contact: CanonicalContact,
+  equipment: CanonicalEquipment,
+  priceBookItem: CanonicalPriceBookItem,
+  estimate: CanonicalEstimate,
+  job: CanonicalJob,
+  recurringSchedule: CanonicalRecurringSchedule,
+  invoice: CanonicalInvoice,
+  payment: CanonicalPayment,
+  attachment: CanonicalAttachment,
+};
 export type EntityName = (typeof ENTITY_ORDER)[number];

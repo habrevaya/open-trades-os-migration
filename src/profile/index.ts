@@ -98,7 +98,9 @@ const TRACKED: Partial<Record<EntityName, string[]>> = {
   job: ["status", "jobType", "leadSource", "total", "completedAt", "visits"],
   invoice: ["status", "issuedOn", "dueOn", "total", "balance", "lines"],
   payment: ["method", "status", "amount", "allocations"],
-  equipment: ["category", "manufacturer", "serialNumber", "installedOn"],
+  equipment: ["category", "manufacturer", "model", "serialNumber", "installedOn", "warrantyPartsExpiresOn", "warrantyLaborExpiresOn"],
+  contact: ["role", "email", "phone", "mobile", "isPrimary"],
+  recurringSchedule: ["kind", "model", "status", "intervalUnit", "interval", "anchorOn", "nextOccurrenceOn", "price"],
   estimate: ["status", "total", "propertySourceId", "options"],
   priceBookItem: ["kind", "code", "price", "cost"],
   user: ["email", "active"],
@@ -141,12 +143,23 @@ export class Profiler {
   private readonly negativeBalance: string[] = [];
   private readonly jobNoVisits: string[] = [];
   private readonly unallocatedPayments: string[] = [];
+  private readonly orphanEquipmentProperty: string[] = [];
+  private readonly orphanContactCustomer: string[] = [];
+  private readonly orphanScheduleCustomer: string[] = [];
+  private readonly scheduleNoAnchor: string[] = [];
+  private readonly scheduleNoNext: string[] = [];
 
   private counts = {
     orphanJobCustomer: 0, orphanJobProperty: 0, orphanPaymentInvoice: 0,
     propertyNoAddress: 0, customerNoContact: 0, invoiceLineMismatch: 0,
     negativeBalance: 0, jobNoVisits: 0, unallocatedPayments: 0,
+    orphanEquipmentProperty: 0, orphanContactCustomer: 0, orphanScheduleCustomer: 0,
+    scheduleNoAnchor: 0, scheduleNoNext: 0,
   };
+
+  private sample(list: string[], id: string): void {
+    if (list.length < SAMPLE_CAP) list.push(id);
+  }
 
   observe(entity: EntityName, canonical: Record<string, unknown>): void {
     const bucket: EntityBucket = this.perEntity.get(entity) ?? { count: 0, ids: new Map(), fields: new Map() };
@@ -174,6 +187,7 @@ export class Profiler {
       case "job": this.observeJob(id, canonical); break;
       case "invoice": this.observeInvoice(id, canonical); break;
       case "payment": this.observePayment(id, canonical); break;
+      case "recurringSchedule": this.observeSchedule(id, canonical); break;
       default: break;
     }
   }
@@ -247,6 +261,25 @@ export class Profiler {
   }
 
   /**
+   * docs/recurring-schedules.md, rule 2: "every 90 days" without knowing what
+   * it is 90 days from is not a schedule. A materialized series carries its
+   * jobs instead, and a manual list has nothing to anchor, so only the two
+   * models that compute dates are held to it.
+   */
+  private observeSchedule(id: string, rec: Record<string, unknown>): void {
+    const model = String(rec["model"] ?? "");
+    const status = String(rec["status"] ?? "").toLowerCase();
+    if ((model === "rule" || model === "anchored-to-completion") && !rec["anchorOn"] && !rec["startsOn"]) {
+      this.counts.scheduleNoAnchor += 1;
+      this.sample(this.scheduleNoAnchor, id);
+    }
+    if (!rec["nextOccurrenceOn"] && !["cancelled", "canceled", "expired", "inactive", "ended"].includes(status)) {
+      this.counts.scheduleNoNext += 1;
+      this.sample(this.scheduleNoNext, id);
+    }
+  }
+
+  /**
    * Referential checks run at the end, not during, because a snapshot is not
    * ordered. A job can be read before the customer it names.
    */
@@ -265,6 +298,7 @@ export class Profiler {
 
   private readonly deferredJobs: { id: string; customer: string; property: string }[] = [];
   private readonly deferredAllocations: { id: string; invoice: string }[] = [];
+  private readonly deferredRefs: { kind: "equipment" | "contact" | "schedule"; id: string; ref: string }[] = [];
 
   /** Called by the caller's second pass; see `profile()`. */
   defer(entity: EntityName, canonical: Record<string, unknown>): void {
@@ -274,6 +308,15 @@ export class Profiler {
         customer: String(canonical["customerSourceId"] ?? ""),
         property: String(canonical["propertySourceId"] ?? ""),
       });
+    }
+    if (entity === "equipment") {
+      this.deferredRefs.push({ kind: "equipment", id: String(canonical["sourceId"] ?? ""), ref: String(canonical["propertySourceId"] ?? "") });
+    }
+    if (entity === "contact") {
+      this.deferredRefs.push({ kind: "contact", id: String(canonical["sourceId"] ?? ""), ref: String(canonical["customerSourceId"] ?? "") });
+    }
+    if (entity === "recurringSchedule") {
+      this.deferredRefs.push({ kind: "schedule", id: String(canonical["sourceId"] ?? ""), ref: String(canonical["customerSourceId"] ?? "") });
     }
     if (entity === "payment") {
       const allocations = Array.isArray(canonical["allocations"]) ? (canonical["allocations"] as Record<string, unknown>[]) : [];
@@ -292,6 +335,21 @@ export class Profiler {
       if (allocation.invoice !== "" && !this.invoiceIds.has(allocation.invoice)) {
         this.counts.orphanPaymentInvoice += 1;
         if (this.orphanPaymentInvoice.length < SAMPLE_CAP) this.orphanPaymentInvoice.push(allocation.id);
+      }
+    }
+
+    for (const ref of this.deferredRefs) {
+      if (ref.kind === "equipment" && !this.propertyIds.has(ref.ref)) {
+        this.counts.orphanEquipmentProperty += 1;
+        this.sample(this.orphanEquipmentProperty, ref.id);
+      }
+      if (ref.kind === "contact" && !this.customerIds.has(ref.ref)) {
+        this.counts.orphanContactCustomer += 1;
+        this.sample(this.orphanContactCustomer, ref.id);
+      }
+      if (ref.kind === "schedule" && !this.customerIds.has(ref.ref)) {
+        this.counts.orphanScheduleCustomer += 1;
+        this.sample(this.orphanScheduleCustomer, ref.id);
       }
     }
 
@@ -320,6 +378,16 @@ export class Profiler {
       `${this.counts.orphanJobProperty} job(s) name a property that is not in the snapshot. These would load with no address.`);
     add("error", "payment.orphan_invoice", this.counts.orphanPaymentInvoice, this.orphanPaymentInvoice,
       `${this.counts.orphanPaymentInvoice} payment(s) are allocated to an invoice that is not in the snapshot. Receivables will not reconcile.`);
+    add("error", "recurringSchedule.orphan_customer", this.counts.orphanScheduleCustomer, this.orphanScheduleCustomer,
+      `${this.counts.orphanScheduleCustomer} recurring schedule(s) name a customer that is not in the snapshot. A maintenance visit nobody can be sent to is a missed visit.`);
+    add("warning", "equipment.orphan_property", this.counts.orphanEquipmentProperty, this.orphanEquipmentProperty,
+      `${this.counts.orphanEquipmentProperty} piece(s) of equipment name a property that is not in the snapshot. The serial and warranty would have nowhere to live.`);
+    add("warning", "contact.orphan_customer", this.counts.orphanContactCustomer, this.orphanContactCustomer,
+      `${this.counts.orphanContactCustomer} contact(s) name a customer that is not in the snapshot.`);
+    add("warning", "recurringSchedule.no_anchor", this.counts.scheduleNoAnchor, this.scheduleNoAnchor,
+      `${this.counts.scheduleNoAnchor} recurring schedule(s) have a cadence and nothing it counts from. Decide each anchor by hand before cutover; see docs/recurring-schedules.md.`);
+    add("warning", "recurringSchedule.no_next_occurrence", this.counts.scheduleNoNext, this.scheduleNoNext,
+      `${this.counts.scheduleNoNext} active recurring schedule(s) carry no next occurrence date, so a schedule that is off by a cycle cannot be caught by reconcile.`);
     add("warning", "property.incomplete_address", this.counts.propertyNoAddress, this.propertyNoAddress,
       `${this.counts.propertyNoAddress} property record(s) are missing street, city or postal code. Routing and taxes both depend on these.`);
     add("warning", "customer.no_contact", this.counts.customerNoContact, this.customerNoContact,

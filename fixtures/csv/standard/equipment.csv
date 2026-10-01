@@ -1,0 +1,3 @@
+id,property_id,category,name,manufacturer,model,serial_number,installed_on,warranty_parts_expires_on,warranty_labor_expires_on,custom:Filter size
+E-1,P-1,Furnace,Attic furnace,Carrier,59SC5A060E17,2419A12345,04/02/2019,04/02/2029,04/02/2020,16x25x1
+,P-3,Backflow preventer,,Watts,LF009M2-QT,,,,,

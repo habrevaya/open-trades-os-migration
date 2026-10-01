@@ -38,13 +38,18 @@ separated with `;`.
 | `payments.csv` | **id**, **customer_id**, **amount**, **received_at**, method, status, invoice_id |
 | `payment_allocations.csv` | **payment_id**, **invoice_id**, **amount** |
 | `attachments.csv` | **id**, **entity_type** (`customer` `property` `job` `visit` `estimate` `invoice` `equipment`), **entity_id**, url or path, file_name, content_type |
+| `contacts.csv` | **id**, **customer_id**, property_id, name (or first_name and last_name), first_name, last_name, email, phone, mobile, role, primary, active, notes |
+| `equipment.csv` | id, **property_id**, **category** (or name), name, manufacturer, model, serial_number, installed_on, warranty_parts_expires_on, warranty_labor_expires_on |
+| `recurring_schedules.csv` | **id**, **customer_id**, **model** (`rule` `materialized-series` `anchored-to-completion` `manual-list`), property_id, kind (`recurring-job` / `service-agreement`), name, description, status, rule, interval_unit (`day` `week` `month` `year`), interval, anchor_on, starts_on, ends_on, next_occurrence_on, visits_per_term, price, billing_frequency, job_type, technician_ids, equipment_ids, job_ids |
+| `recurring_exceptions.csv` | **schedule_id**, **on**, **kind** (`skipped` `moved` `cancelled`), moved_to, notes |
 
 Bold columns are required. A row missing one is reported as unreadable, by
 id, rather than skipped quietly.
 
 Child files are joined onto their parents by id: invoice lines onto
 invoices, visits onto jobs, estimate lines onto estimates (grouped into
-options by the `option` column), allocations onto payments. A child row whose
+options by the `option` column), allocations onto payments, exceptions onto
+recurring schedules. A child row whose
 parent is not in the parent file is reported at extract time.
 
 A payment with an `invoice_id` and no allocation rows is applied to that
@@ -52,6 +57,33 @@ invoice in full. A payment with neither is unapplied money (a deposit or a
 credit), which is carried and reported, never dropped.
 
 An attachment `path` is relative to the export directory.
+
+### Equipment
+
+Equipment hangs off a property, not a customer: the serial follows the
+furnace when the house is sold. `id` is optional in `equipment.csv` alone,
+because equipment reports usually have none. Without one, the id is derived
+from the property, category, manufacturer, model and serial (or the name,
+when there is no serial), lower-cased with spacing collapsed. It is stable
+across re-exports of unchanged data. Two identical units without serials at
+one property get the same id, and `profile` reports them as a duplicate
+rather than this guessing them apart. `custom:<label>` columns become
+attributes.
+
+### Recurring schedules
+
+One row per schedule or service agreement, following
+[recurring-schedules.md](recurring-schedules.md). `model` is required and
+never defaulted: which recurrence model the source used is the one decision
+an importer must not make for you. Carry the anchor (`anchor_on`, or
+`starts_on`) and the next occurrence the source shows; `profile` warns about
+every active schedule missing either. `rule` is kept exactly as written (an
+RRULE, or the source's own description). `job_ids` names jobs the source has
+already created for the schedule.
+
+Contacts, equipment and recurring schedules are extracted, profiled and
+carried in the snapshot. The loader does not write them yet; see
+[loading.md](loading.md#not-loaded-yet).
 
 ## Values
 

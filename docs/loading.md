@@ -171,9 +171,16 @@ is not OpenTradesOS.
 
 ## Not loaded yet
 
-- **Recurring schedules.** The target has `/v1/recurring-schedules`; no
-  adapter yet produces a canonical schedule to feed it. See
+These have canonical shapes and adapters that produce them, so `extract` and
+`profile` carry and check them, but `load` does not write them yet:
+
+- **Recurring schedules and service agreements** (`recurringSchedule`). The
+  target has `/v1/recurring-schedules`. Produced today by Generic CSV
+  (`recurring_schedules.csv`). No API adapter reads a recurrence rule yet:
+  Jobber and Housecall Pro deliver recurring work as the jobs and visits
+  already created, which `sources` says for each. See
   [recurring-schedules.md](recurring-schedules.md).
-- **Equipment.** It has a canonical shape and no adapter maps it yet, and the
-  target's public API has no route to create it.
-- **Contacts** beyond the customer's own email and phone are not modelled yet.
+- **Equipment**, on properties, with serials and warranty dates
+  (`equipment`). Produced by Generic CSV (`equipment.csv`).
+- **Contacts** beyond the customer's own email and phone (`contact`).
+  Produced by Generic CSV (`contacts.csv`).

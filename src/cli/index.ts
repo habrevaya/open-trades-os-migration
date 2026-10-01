@@ -96,12 +96,19 @@ program
       for (const limit of adapter.capabilities.knownLimits) {
         console.log(`           ${pc.dim(wrap(limit, 11))}`);
       }
+      const unsupported = adapter.capabilities.unsupported ?? [];
+      if (unsupported.length > 0) {
+        console.log(`           ${pc.yellow("not carried:")}`);
+        for (const u of unsupported) {
+          console.log(`           ${pc.dim(wrap(`${u.field}: ${u.reason}`, 11))}`);
+        }
+      }
       console.log("");
     }
     for (const planned of PLANNED) {
       console.log(`  ${pc.yellow("planned")}  ${planned}`);
     }
-    console.log("");
+    if (PLANNED.length > 0) console.log("");
   });
 
 program

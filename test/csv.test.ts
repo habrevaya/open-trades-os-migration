@@ -55,6 +55,13 @@ describe("cells", () => {
     expect(() => map.date("next Tuesday", settings)).toThrow(/without guessing/);
   });
 
+  it("reads a 12-hour time and refuses one that cannot be", () => {
+    expect(map.date("3/14/2023 3:41 PM", settings)).toBe("2023-03-14T15:41:00");
+    expect(map.date("3/14/2023 12:05 am", settings)).toBe("2023-03-14T00:05:00");
+    expect(map.date("3/14/2023 12:05 PM", settings)).toBe("2023-03-14T12:05:00");
+    expect(() => map.date("3/14/2023 13:41 PM", settings)).toThrow(/12-hour/);
+  });
+
   it("will not read a blank balance as nothing owed", () => {
     expect(() => map.toInvoice({ id: "I-9", customer_id: "C-1", total: "10.00" }, settings)).toThrow(/no balance/);
   });
@@ -103,6 +110,60 @@ describe("the standard layout", () => {
     const { snapshot } = await extract(from);
     const { sink } = await canonical(snapshot);
     expect(sink.get("attachment")[0]!["localPath"]).toBe(join(from, "photos/a.jpg"));
+  });
+});
+
+describe("equipment, contacts and recurring schedules", () => {
+  it("extracts them, with exceptions joined onto their schedule", async () => {
+    const { snapshot } = await extract(join(FIXTURES, "standard"));
+    expect(snapshot.info.counts).toMatchObject({ contact: 2, equipment: 2, recurringSchedule: 2 });
+    const { sink } = await canonical(snapshot);
+
+    const furnace = sink.get("equipment").find((e) => e["sourceId"] === "E-1")!;
+    expect(furnace).toMatchObject({
+      propertySourceId: "P-1", category: "Furnace", manufacturer: "Carrier", serialNumber: "2419A12345",
+      installedOn: "2019-04-02", warrantyPartsExpiresOn: "2029-04-02", warrantyLaborExpiresOn: "2020-04-02",
+      attributes: { name: "Attic furnace", "Filter size": "16x25x1" },
+    });
+
+    const contact = sink.get("contact").find((c) => c["sourceId"] === "K-1")!;
+    expect(contact).toMatchObject({ customerSourceId: "C-200", name: "Marisol Vega", role: "Property Manager", isPrimary: true });
+
+    const plan = sink.get("recurringSchedule").find((r) => r["sourceId"] === "R-1")!;
+    expect(plan).toMatchObject({
+      kind: "service-agreement", model: "rule", rule: "FREQ=MONTHLY;INTERVAL=6;BYMONTHDAY=14",
+      intervalUnit: "month", interval: 6, anchorOn: "2023-03-14", nextOccurrenceOn: "2025-09-14",
+      price: "189.0000", equipmentSourceIds: ["E-1"], jobSourceIds: ["J-1"],
+    });
+    expect(plan["exceptions"]).toEqual([
+      { on: "2024-09-14", kind: "moved", movedTo: "2024-09-20", notes: "Customer travelling" },
+      { on: "2025-03-14", kind: "skipped", movedTo: undefined, notes: "Unit replaced under warranty" },
+    ]);
+  });
+
+  it("derives a stable id for equipment exported without one", async () => {
+    const { snapshot } = await extract(join(FIXTURES, "standard"));
+    const { sink } = await canonical(snapshot);
+    const valve = sink.get("equipment").find((e) => e["propertySourceId"] === "P-3")!;
+    expect(valve["sourceId"]).toBe("derived:p-3|backflow preventer|watts|lf009m2-qt||");
+    expect(map.equipmentId({ property_id: "P-3", category: "Backflow preventer", manufacturer: "Watts", model: "LF009M2-QT" }))
+      .toBe(valve["sourceId"]);
+  });
+
+  it("reports a schedule with nothing to anchor it and no next date", async () => {
+    const { snapshot } = await extract(join(FIXTURES, "standard"));
+    const { result } = await canonical(snapshot);
+    const codes = result.profile.findings.map((f) => f.code);
+    expect(result.profile.findings.find((f) => f.code === "recurringSchedule.no_anchor")?.sample).toEqual(["R-2"]);
+    expect(codes).toContain("recurringSchedule.no_next_occurrence");
+    expect(codes).not.toContain("equipment.orphan_property");
+  });
+
+  it("refuses a schedule that does not say which recurrence model it is", () => {
+    // Choosing the model is the decision docs/recurring-schedules.md says an
+    // adapter must never make silently.
+    expect(() => map.toRecurringSchedule({ id: "R-9", customer_id: "C-1" }, settings)).toThrow(/no model/);
+    expect(() => map.toRecurringSchedule({ id: "R-9", customer_id: "C-1", model: "weekly-ish" }, settings)).toThrow(/must be one of/);
   });
 });
 
