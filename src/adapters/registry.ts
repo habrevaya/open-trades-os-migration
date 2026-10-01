@@ -15,7 +15,7 @@ import { canonicalImport } from "./canonical-import/index.js";
 export const adapters: SourceAdapter[] = [jobber, housecallPro, workiz, fieldedge, servicetitan, csv, canonicalImport];
 
 /** Sources with no adapter yet, and nothing in the way of writing one. */
-export const PLANNED: readonly string[] = ["servicem8"];
+export const PLANNED: readonly string[] = [];
 
 /**
  * Sources this toolkit will not read through their API, and why. The line
@@ -24,7 +24,12 @@ export const PLANNED: readonly string[] = ["servicem8"];
  * terms; where a platform's terms rule out the API route, it is said here
  * by name instead of being built.
  */
-export const BLOCKED: Readonly<Record<string, string>> = {};
+export const BLOCKED: Readonly<Record<string, string>> = {
+  servicem8:
+    "ServiceM8's platform policy does not allow its API to be used to export data to a product that replicates " +
+    "ServiceM8 without ServiceM8's permission, so this toolkit does not connect to ServiceM8. Export your own data " +
+    "from ServiceM8 and read it with --source csv. See docs/servicem8.md.",
+};
 
 export function adapterFor(id: string): SourceAdapter {
   const found = adapters.find((a) => a.id === id);

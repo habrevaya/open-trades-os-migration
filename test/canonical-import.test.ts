@@ -118,3 +118,9 @@ describe("a ServiceTitan snapshot the owner produced", () => {
     expect(sink.get("attachment")[0]!["localPath"]).toBe(join(from, "photos/plate.jpg"));
   });
 });
+
+describe("a source this toolkit will not read through its API", () => {
+  it("says why by name instead of pretending to be unwritten", () => {
+    expect(() => adapterFor("servicem8")).toThrow(/platform policy.*docs\/servicem8\.md/s);
+  });
+});

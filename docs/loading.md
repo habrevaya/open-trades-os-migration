@@ -176,12 +176,12 @@ These have canonical shapes and adapters that produce them, so `extract` and
 
 - **Recurring schedules and service agreements** (`recurringSchedule`). The
   target has `/v1/recurring-schedules`. Produced today by Generic CSV
-  (`recurring_schedules.csv`). No API adapter reads a recurrence rule yet:
+  (`recurring_schedules.csv`) and canonical imports, ServiceTitan's included. No API adapter reads a recurrence rule yet:
   Jobber and Housecall Pro deliver recurring work as the jobs and visits
   already created, which `sources` says for each. See
   [recurring-schedules.md](recurring-schedules.md).
 - **Equipment**, on properties, with serials and warranty dates
-  (`equipment`). Produced by FieldEdge (Equipment List) and Generic CSV
-  (`equipment.csv`).
+  (`equipment`). Produced by FieldEdge (Equipment List), Generic CSV
+  (`equipment.csv`) and canonical imports.
 - **Contacts** beyond the customer's own email and phone (`contact`).
-  Produced by Generic CSV (`contacts.csv`).
+  Produced by Generic CSV (`contacts.csv`) and canonical imports.

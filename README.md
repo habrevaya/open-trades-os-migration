@@ -20,9 +20,11 @@ strategy.
 
 ## Status
 
-**Phase 2.** Three sources read, and all seven commands run: a snapshot now
-lands in OpenTradesOS, through its public API, resumably, and reconciles
-against it to the cent or says exactly why not.
+**Phase 2.** Four sources read (Jobber, Housecall Pro, Workiz, FieldEdge),
+any spreadsheet export reads through Generic CSV, a ServiceTitan snapshot you
+produce yourself imports, and all seven commands run: a snapshot lands in
+OpenTradesOS, through its public API, resumably, and reconciles against it to
+the cent or says exactly why not.
 
 | Source | Route | Status |
 |---|---|---|
@@ -31,7 +33,7 @@ against it to the cent or says exactly why not.
 | Generic CSV | Mapped CSV | **Reads.** Every entity, equipment, contacts and recurring schedules included, from any export, with a column mapping. See [docs/generic-csv.md](docs/generic-csv.md) |
 | Canonical snapshot | Files you produce | **Imports** records already in the canonical shape, for any source this toolkit does not connect to. See [docs/snapshot-format.md](docs/snapshot-format.md) |
 | Workiz | REST, API key | **Reads.** Jobs with team, customers and properties split out of them, invoices from job totals, team. No payments, lines or leads: the public API does not list them. See [docs/workiz.md](docs/workiz.md) |
-| ServiceM8 | REST, OAuth | Planned |
+| ServiceM8 | Your own export | **Not read through its API.** Its platform policy does not allow the API to export data to a product that replicates ServiceM8 without permission. Your own CSV exports go through Generic CSV. See [docs/servicem8.md](docs/servicem8.md) |
 | ServiceTitan | Your own export | **Imports** the snapshot you produce from your own tenant, checked record by record against the canonical schema. Connects to nothing. See below and [docs/servicetitan.md](docs/servicetitan.md) |
 | FieldEdge | CSV export only | **Reads** FieldEdge's own five exports (customers, dispatches, invoices, quotes, equipment) with their columns built in. No payments or lines: not exported. See [docs/fieldedge.md](docs/fieldedge.md) |
 
@@ -52,7 +54,7 @@ load and dry run counts the records each gap touched. The two that cost the
 most: historical tax is not carried (the target computes tax as zero), and
 everything posts to the ledger dated the day of the load.
 
-The mapping and loading logic is covered by 184 tests against fixtures and
+The mapping and loading logic is covered by 236 tests against fixtures and
 a fake OpenTradesOS served over real HTTP, including a load killed after each
 of its writes in turn and resumed. What no test can tell you is whether a
 real tenant matches the fixtures, and for some field the answer will be no.
