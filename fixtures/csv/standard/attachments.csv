@@ -1,0 +1,3 @@
+id,entity_type,entity_id,file_name,content_type,url
+A-1,job,J-1,before.jpg,image/jpeg,http://files.invalid/before.jpg
+A-2,invoice,I-1,invoice-2201.pdf,application/pdf,http://files.invalid/invoice-2201.pdf

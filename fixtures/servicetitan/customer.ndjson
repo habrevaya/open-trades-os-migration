@@ -1,0 +1,2 @@
+{"sourceSystem":"servicetitan","sourceId":"ST-C-5001","type":"residential","name":"Dana Whitfield","email":"dana.w@example.com","phone":"512-555-0192","billingAddress":{"line1":"4102 Ramsey Ave","city":"Austin","state":"TX","postalCode":"78756","country":"US"},"tags":["Member"]}
+{"sourceSystem":"servicetitan","sourceId":"ST-C-5002","type":"commercial","name":"Brazos Property Group","email":"ap@brazospg.example.com","taxExempt":true}

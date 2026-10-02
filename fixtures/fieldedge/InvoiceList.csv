@@ -1,0 +1,3 @@
+Customer,WO #,PO #,Original Quote WO #,Invoice #,Date,Due Date,Total,Due,Technician,Sales Person,Address 1,Address 2,City,State,Zip,Lead Source,Primary Phone,Primary Email,Task,Customer Acquired Through,Customer Type,Customer Since
+"Whitfield, Dana",10421,,,INV-5521,3/14/2024,4/13/2024,$344.24,$0.00,Ray Ortiz,,4102 Ramsey Ave,,Austin,TX,78756,Referral,(512) 555-0192,dana.w@example.com,Spring tune-up,Referral,Residential,6/2/2009
+Brazos Property Group,10388,PO-7702,,INV-5490,1/9/2024,2/8/2024,"$1,234.56",$185.10,Nia Osei,Sam Lee,900 Congress Ave,Suite 400,Austin,TX,78701,,(512) 555-0110,ap@brazospg.example.com,Backflow repair,Website,Commercial,3/1/2018

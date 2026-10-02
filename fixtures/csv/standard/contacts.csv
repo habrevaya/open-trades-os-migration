@@ -1,0 +1,3 @@
+id,customer_id,property_id,first_name,last_name,email,phone,mobile,role,primary,notes
+K-1,C-200,P-3,Marisol,Vega,mvega@brazospg.example.com,512-555-0140,512-555-0141,Property Manager,yes,Approves anything over $500
+K-2,C-200,,Accounts,Payable,ap@brazospg.example.com,,,BILLING,no,

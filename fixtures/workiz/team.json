@@ -1,0 +1,4 @@
+[
+  { "id": "35355", "name": "Ray Ortiz", "created": "2020-08-29 09:12:33", "role": "tech", "fieldTech": true, "email": "ray@example.com", "serviceAreas": ["north"], "skills": ["Repair"], "active": true },
+  { "id": "35360", "name": "Office Admin", "created": "2020-08-29 09:12:33", "role": "admin", "fieldTech": false, "email": "office@example.com", "serviceAreas": [], "skills": [], "active": true }
+]

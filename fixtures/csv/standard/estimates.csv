@@ -1,0 +1,2 @@
+id,customer_id,property_id,number,status,title,issued_on,subtotal,tax_total,total
+E-1,C-100,P-1,77,approved,Replace condenser,2024-05-01,6200.00,0.00,6200.00

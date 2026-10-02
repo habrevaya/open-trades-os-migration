@@ -1,13 +1,21 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import pc from "picocolors";
-import { readFile, writeFile } from "node:fs/promises";
-import { adapterFor, adapters, PLANNED } from "../adapters/registry.js";
+import { access, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { adapterFor, adapters, PLANNED, BLOCKED } from "../adapters/registry.js";
 import { Snapshot } from "../snapshot/index.js";
 import { transform, CountingSink } from "../transform/index.js";
 import { renderProfile } from "../profile/index.js";
-import { reconcile, renderReconcile, type Side } from "../reconcile/index.js";
-import type { EntityName } from "../canonical/index.js";
+import { reconcile, renderReconcile, sourceSide, type Side } from "../reconcile/index.js";
+import { buildMapping, check, mappingPath, readMapping, writeMapping, emptyMapping, proposeFromTarget, type Mapping } from "../mapping/index.js";
+import { load, renderLoad, failures } from "../load/index.js";
+import { Ledger, defaultLedgerPath } from "../load/ledger.js";
+import { HttpTarget, apiBase } from "../target/client.js";
+import { MemoryTarget, withoutPermissions } from "../target/memory.js";
+import { readTarget } from "../target/read.js";
+import { fetchAttachments, uploadAttachments } from "../attachments/index.js";
+import { defaultRetry } from "../adapters/http.js";
 
 /**
  * Seven commands, each idempotent and resumable, each producing an artifact
@@ -18,9 +26,9 @@ import type { EntityName } from "../canonical/index.js";
  * mistake in production. Skipping them is how a migration becomes a horror
  * story someone posts about.
  *
- * Three of the seven are implemented. The rest say so plainly rather than
- * doing something approximate, because a migration tool that half works is
- * worse than one that does not run.
+ * All seven run. Where the target's API cannot take something the source
+ * has, the commands say so by name rather than approximating it, because a
+ * migration tool that half works quietly is worse than one that does not run.
  */
 const program = new Command()
   .name("opentradesos-migrate")
@@ -34,7 +42,18 @@ const program = new Command()
  * list, where every other user on the machine can read it. This is somebody's
  * live business account.
  */
-function credentialsFor(source: string): Record<string, string> {
+function credentialsFor(source: string, options: { from?: string; columns?: string; timezone?: string } = {}): Record<string, string> {
+  // A spreadsheet export is reached by its path, not a token, and a path is
+  // not a secret, so it is the one credential that is a flag.
+  if (FILE_SOURCES.includes(source)) {
+    if (!options.from) fail(`The ${source} source reads a directory of exports. Pass --from <dir>.`);
+    return {
+      dir: options.from,
+      ...(options.columns ? { columns: options.columns } : {}),
+      ...(options.timezone ? { timezone: options.timezone } : {}),
+    };
+  }
+
   const env = process.env;
   const pick = (...names: string[]): string | undefined => {
     for (const name of names) {
@@ -43,19 +62,72 @@ function credentialsFor(source: string): Record<string, string> {
     }
     return undefined;
   };
-  const token = source === "jobber"
-    ? pick("JOBBER_TOKEN", "JOBBER_ACCESS_TOKEN")
-    : pick("HOUSECALL_PRO_KEY", "HOUSECALL_PRO_TOKEN");
+  const names = TOKEN_ENV[source] ?? [];
+  const token = pick(...names);
 
   if (!token) {
-    const name = source === "jobber" ? "JOBBER_TOKEN" : "HOUSECALL_PRO_KEY";
     fail(
-      `No credential found. Set ${name} in your environment.\n\n` +
+      `No credential found. Set ${names[0] ?? "the source's token"} in your environment.\n\n` +
         `  Deliberately not a command line flag: a token passed as an argument\n` +
         `  is written to your shell history and visible in the process list.`,
     );
   }
-  return { token, key: token };
+  const extra: Record<string, string> = {};
+  for (const [key, name] of Object.entries(EXTRA_ENV[source] ?? {})) {
+    const value = pick(name);
+    if (value) extra[key] = value;
+  }
+  return { token, key: token, ...extra };
+}
+
+/** Sources read from files the operator exported, reached by --from rather than a token. */
+const FILE_SOURCES = ["csv", "fieldedge", "servicetitan-csv", "servicetitan", "canonical"];
+
+/**
+ * `--source servicetitan` has two routes, and the folder says which it is
+ * unless --format does: a customer.ndjson is a canonical snapshot the owner
+ * produced (the older, advanced route, kept working exactly as it was);
+ * anything else is the owner's report exports, which is the default.
+ */
+async function servicetitanRoute(options: { from?: string; format?: string }): Promise<string> {
+  if (options.format === "canonical") return "servicetitan";
+  if (options.format === "reports") return "servicetitan-csv";
+  if (options.format) fail(`--format is reports or canonical, not ${JSON.stringify(options.format)}.`);
+  if (!options.from) return "servicetitan-csv";
+  try {
+    await access(join(options.from, "customer.ndjson"));
+    return "servicetitan";
+  } catch {
+    return "servicetitan-csv";
+  }
+}
+
+/** Where each API source's credential lives. The first name is the documented one. */
+const TOKEN_ENV: Record<string, string[]> = {
+  jobber: ["JOBBER_TOKEN", "JOBBER_ACCESS_TOKEN"],
+  "housecall-pro": ["HOUSECALL_PRO_KEY", "HOUSECALL_PRO_TOKEN"],
+  workiz: ["WORKIZ_TOKEN", "WORKIZ_API_TOKEN"],
+};
+
+/** Optional, non-secret settings an API source reads from the environment. */
+const EXTRA_ENV: Record<string, Record<string, string>> = {
+  workiz: { account: "WORKIZ_ACCOUNT", since: "WORKIZ_SINCE" },
+};
+
+/** The target's token. Same rule as the source's: the environment, never a flag. */
+function targetToken(): string {
+  const token = process.env["OPENTRADESOS_TOKEN"]?.trim();
+  if (!token) {
+    fail(
+      `No target credential. Set OPENTRADESOS_TOKEN to a connected app token (ots_...).\n\n` +
+        `  An owner installs the app with read and write on customers, properties, the\n` +
+        `  price book, jobs, visits, estimates, invoices, payments and documents, the\n` +
+        `  "all" scope on customers, jobs, estimates and invoices, and data:import,\n` +
+        `  which is what lets it record history. load reads GET /v1/apps/me first and\n` +
+        `  names anything missing before it writes. See docs/loading.md.`,
+    );
+  }
+  return token;
 }
 
 program
@@ -68,22 +140,40 @@ program
       for (const limit of adapter.capabilities.knownLimits) {
         console.log(`           ${pc.dim(wrap(limit, 11))}`);
       }
+      const unsupported = adapter.capabilities.unsupported ?? [];
+      if (unsupported.length > 0) {
+        console.log(`           ${pc.yellow("not carried:")}`);
+        for (const u of unsupported) {
+          console.log(`           ${pc.dim(wrap(`${u.field}: ${u.reason}`, 11))}`);
+        }
+      }
       console.log("");
     }
     for (const planned of PLANNED) {
       console.log(`  ${pc.yellow("planned")}  ${planned}`);
     }
-    console.log("");
+    if (PLANNED.length > 0) console.log("");
+    for (const [id, reason] of Object.entries(BLOCKED)) {
+      console.log(`  ${pc.yellow("csv only")} ${id}`);
+      console.log(`           ${pc.dim(wrap(reason, 11))}`);
+      console.log("");
+    }
   });
 
 program
   .command("extract")
   .description("Pull everything from the source into a local raw snapshot. Never writes to OpenTradesOS.")
-  .requiredOption("-s, --source <source>", "jobber | housecall-pro | workiz | servicem8 | servicetitan | fieldedge | csv")
+  .requiredOption("-s, --source <source>", "jobber | housecall-pro | workiz | fieldedge | servicetitan | csv | canonical")
   .option("-o, --out <dir>", "snapshot directory", "./snapshot")
-  .action(async (options: { source: string; out: string }) => {
-    const adapter = resolve(options.source);
-    const credentials = credentialsFor(adapter.id);
+  .option("--from <dir>", "file sources (csv, fieldedge, servicetitan, canonical): the directory holding the exported files")
+  .option("--columns <file>", "file sources: column mapping, if not <from>/columns.json")
+  .option("--timezone <zone>", "file sources: the IANA time zone the exports' times are in, e.g. America/Chicago")
+  .option("--format <format>", "servicetitan: reports (your report exports, the default) or canonical (a snapshot you produced)")
+  .action(async (options: { source: string; out: string; from?: string; columns?: string; timezone?: string; format?: string }) => {
+    const source = options.source === "servicetitan" ? await servicetitanRoute(options) : options.source;
+    if (options.format && options.source !== "servicetitan") fail("--format applies to --source servicetitan only.");
+    const adapter = resolve(source);
+    const credentials = credentialsFor(adapter.id, options);
 
     const check = await adapter.verify(credentials);
     if (!check.ok) fail(`Could not reach ${adapter.displayName}: ${check.error}`);
@@ -116,7 +206,7 @@ program
   .option("-i, --in <dir>", "snapshot directory", "./snapshot")
   .option("--json <file>", "also write the report as JSON")
   .action(async (options: { in: string; json?: string }) => {
-    const snapshot = await Snapshot.read(options.in).catch(() => fail(`No snapshot at ${options.in}. Run extract first.`));
+    const snapshot = await openSnapshot(options.in);
     const adapter = resolve(snapshot.source);
 
     const result = await transform(snapshot, adapter, new CountingSink());
@@ -134,10 +224,7 @@ program
       console.log(`  ${pc.dim("Each of these is a record that will not migrate.")}`);
     }
 
-    if (options.json) {
-      await writeFile(options.json, JSON.stringify(result.profile, null, 2) + "\n", "utf8");
-      console.log(`\n  Report written to ${options.json}`);
-    }
+    await writeJson(options.json, result.profile);
     console.log("");
 
     const errors = result.profile.findings.filter((f) => f.severity === "error").length;
@@ -148,41 +235,297 @@ program
   });
 
 program
+  .command("map")
+  .description("Write the mapping file: technicians, job types, statuses and payment methods. Edit it, then run map again.")
+  .option("-i, --in <dir>", "snapshot directory", "./snapshot")
+  .option("-m, --mapping <file>", "mapping file (default <in>/mapping.json)")
+  .option("-t, --target <url>", "propose technician and job type ids from the people and job types this OpenTradesOS already has")
+  .action(async (options: { in: string; mapping?: string; target?: string }) => {
+    const snapshot = await openSnapshot(options.in);
+    const adapter = resolve(snapshot.source);
+    const path = options.mapping ?? mappingPath(options.in);
+    const existing = await readMapping(path).catch((error: Error) => fail(error.message));
+    if (existing && existing.source !== snapshot.source) {
+      fail(`${path} maps a ${existing.source} snapshot, not ${snapshot.source}.`);
+    }
+
+    const summary = await buildMapping(snapshot, adapter, existing);
+    let mapping = summary.mapping;
+    let proposals: Awaited<ReturnType<typeof proposeFromTarget>> | undefined;
+    if (options.target) {
+      const base = apiBase(options.target);
+      proposals = await proposeFromTarget(mapping, new HttpTarget(base, targetToken()))
+        .catch((error: Error) => fail(`Could not read people and job types from ${base}: ${error.message}`));
+      mapping = proposals.mapping;
+    }
+    await writeMapping(path, mapping);
+
+    console.log("");
+    console.log(`  ${existing ? "Updated" : "Wrote"} ${path}${summary.added.length > 0 ? ` (${summary.added.length} new value(s))` : ""}`);
+    if (proposals) {
+      const by = (how: string) => proposals.proposed.filter((p) => p.by === how).length;
+      console.log(`  From ${options.target}: ${proposals.people} technician(s) and ${proposals.jobTypes} job type(s) read;` +
+        ` proposed ${proposals.proposed.length} (${by("email")} by email, ${by("name")} by name, ${by("code")} by code). Check them.`);
+      for (const key of proposals.ambiguous) console.log(`    ${pc.yellow("more than one match")}  ${key}`);
+    }
+    reportMapping(summary.mapping);
+    console.log(`\n  Edit the file, run map again to check it, then:`);
+    console.log(`  ${pc.cyan(`opentradesos-migrate dryrun --in ${options.in}`)}\n`);
+  });
+
+program
+  .command("dryrun")
+  .description("Load into a scratch tenant in memory and report every record that would fail, and why. Touches nothing real.")
+  .option("-i, --in <dir>", "snapshot directory", "./snapshot")
+  .option("-m, --mapping <file>", "mapping file (default <in>/mapping.json)")
+  .option("--carry-totals", "carry tax the target cannot take on any line in the invoice's adjustment, so its total still matches")
+  .option("--without-import", "act as a token without data:import, to see what it would be refused")
+  .option("--json <file>", "also write the full report as JSON")
+  .action(async (options: { in: string; mapping?: string; carryTotals?: boolean; withoutImport?: boolean; json?: string }) => {
+    const snapshot = await openSnapshot(options.in);
+    const adapter = resolve(snapshot.source);
+    const path = options.mapping ?? mappingPath(options.in);
+    let mapping = await readMapping(path).catch((error: Error) => fail(error.message));
+    if (!mapping) {
+      // A dry run is allowed to guess, because it writes nothing. It says so.
+      console.log(pc.yellow(`\n  No mapping at ${path}. Using the toolkit's guesses; run map to review them.`));
+      mapping = (await buildMapping(snapshot, adapter, emptyMapping(snapshot.source))).mapping;
+    }
+    refuseBadMapping(mapping, path);
+
+    const target = new MemoryTarget(options.withoutImport ? { permissions: withoutPermissions("data:import") } : {});
+    const ledger = Ledger.memory(target.description, snapshot.source, snapshot.info.account ?? "");
+    const report = await load({
+      snapshot, adapter, target, ledger, mapping, carryTotals: options.carryTotals ?? false, dryRun: true,
+    });
+
+    const expected = sourceSide(await transform(snapshot, adapter, new CountingSink()));
+    const reading = await readTarget(target, ledger);
+    const predicted = reconcile(expected, reading.side);
+
+    console.log("");
+    console.log(renderLoad(report));
+    console.log("");
+    console.log("PREDICTED RECONCILE, if this were loaded for real");
+    console.log(renderReconcile(predicted).split("\n").map((l) => `  ${l}`).join("\n"));
+    console.log("");
+    await writeJson(options.json, { load: report, reconcile: predicted, notes: reading.notes });
+
+    if (failures(report) > 0 || report.aborted) process.exitCode = 1;
+  });
+
+program
+  .command("load")
+  .description("Write into OpenTradesOS through its public API. Resumable, idempotent on source ids.")
+  .option("-i, --in <dir>", "snapshot directory", "./snapshot")
+  .requiredOption("-t, --target <url>", "the OpenTradesOS deployment, e.g. https://ots.example.com")
+  .option("-m, --mapping <file>", "mapping file (default <in>/mapping.json)")
+  .option("--ledger <file>", "load ledger (default <in>/load/<host>.ledger.ndjson)")
+  .option("--carry-totals", "carry tax the target cannot take on any line in the invoice's adjustment, so its total still matches")
+  .option("--concurrency <n>", "records in flight at once", "4")
+  .option("--rebuild-ledger", "first read back, by externalRef, everything this snapshot already loaded into the target, for a lost or partial ledger")
+  .option("--json <file>", "also write the full report as JSON")
+  .action(async (options: {
+    in: string; target: string; mapping?: string; ledger?: string; carryTotals?: boolean; concurrency: string;
+    rebuildLedger?: boolean; json?: string;
+  }) => {
+    const token = targetToken();
+    const snapshot = await openSnapshot(options.in);
+    const adapter = resolve(snapshot.source);
+    const path = options.mapping ?? mappingPath(options.in);
+    const mapping = await readMapping(path).catch((error: Error) => fail(error.message));
+    // Unlike dryrun, load does not guess. The guesses are in a file the
+    // operator has had the chance to read, or the load does not start.
+    if (!mapping) fail(`No mapping at ${path}. Run map, review the file, run dryrun, then load.`);
+    refuseBadMapping(mapping, path);
+
+    const base = apiBase(options.target);
+    const ledger = await Ledger.open(options.ledger ?? defaultLedgerPath(options.in, base), base, snapshot.source, snapshot.info.account ?? "")
+      .catch((error: Error) => fail(error.message));
+    const retry = {
+      ...defaultRetry(),
+      onRetry: (info: { attempt: number; delayMs: number; reason: string }) => {
+        process.stderr.write(`\n  ${pc.dim(`${info.reason}; retrying in ${Math.round(info.delayMs / 1000)}s (attempt ${info.attempt})`)}\n`);
+      },
+    };
+    const target = new HttpTarget(base, token, { retry });
+
+    const meter = progress();
+    console.log(`\n  Loading into ${base}${ledger.size > 0 ? pc.dim(`, resuming from ${ledger.size} ledger entries`) : ""}`);
+    const report = await load({
+      snapshot, adapter, target, ledger, mapping,
+      carryTotals: options.carryTotals ?? false,
+      rebuild: options.rebuildLedger ?? false,
+      concurrency: Math.max(1, Number(options.concurrency) || 4),
+      onProgress: meter.tick,
+      onPreflight: (app) => {
+        process.stdout.write(`  As ${app.name}${app.publisher ? ` (${app.publisher})` : ""}, in organization ${app.organizationId}\n`);
+      },
+    });
+    meter.finish();
+    process.stdout.write("\n");
+    console.log(renderLoad(report));
+    await writeJson(options.json, report);
+    console.log(`\n  Next: ${pc.cyan(`opentradesos-migrate reconcile --in ${options.in} --target ${options.target}`)}\n`);
+    if (failures(report) > 0 || report.aborted) process.exitCode = 1;
+  });
+
+program
+  .command("attachments")
+  .description("Second pass for photos and documents: download and index them, then, with --target, attach each to its record.")
+  .option("-i, --in <dir>", "snapshot directory", "./snapshot")
+  .option("-o, --out <dir>", "where files land (default <in>/attachments)")
+  .option("-t, --target <url>", "attach each file to the record load made in this target")
+  .option("--ledger <file>", "load ledger (default <in>/load/<host>.ledger.ndjson)")
+  .option("--no-upload", "with --target: only index files against their target records, attach nothing")
+  .action(async (options: { in: string; out?: string; target?: string; ledger?: string; upload: boolean }) => {
+    const snapshot = await openSnapshot(options.in);
+    const adapter = resolve(snapshot.source);
+    if (!adapter.capabilities.hasAttachments) {
+      console.log(pc.yellow(`\n  ${adapter.displayName} gives this toolkit no way to fetch attachments.`));
+      for (const limit of adapter.capabilities.knownLimits.filter((l) => /attachment|photo/i.test(l))) {
+        console.log(`  ${wrap(limit, 2)}`);
+      }
+      console.log("");
+      return;
+    }
+    let ledger: Ledger | undefined;
+    let base: string | undefined;
+    if (options.target) {
+      base = apiBase(options.target);
+      ledger = await Ledger.open(options.ledger ?? defaultLedgerPath(options.in, base), base, snapshot.source, snapshot.info.account ?? "")
+        .catch((error: Error) => fail(error.message));
+    }
+    const report = await fetchAttachments(snapshot, adapter, {
+      ...(options.out ? { outDir: options.out } : {}),
+      ...(ledger ? { ledger } : {}),
+      onProgress: (n) => process.stdout.write(`\r  attachment ${String(n).padStart(8)}`),
+    });
+    process.stdout.write("\n\n");
+    console.log(`  downloaded   ${String(report.downloaded).padStart(8)}  (${(report.bytes / 1_048_576).toFixed(1)} MB)`);
+    console.log(`  already had  ${String(report.already).padStart(8)}`);
+    if (report.empty > 0) console.log(`  no file      ${String(report.empty).padStart(8)}`);
+    if (report.failed.length > 0) {
+      console.log(`  failed       ${String(report.failed.length).padStart(8)}`);
+      for (const f of report.failed.slice(0, 20)) console.log(`    ${f.sourceId}: ${f.reason}`);
+      process.exitCode = 1;
+    }
+    console.log(`\n  Files and index.ndjson are in ${report.dir}.`);
+    if (!ledger || !base || !options.upload) {
+      console.log(`  Not attached in OpenTradesOS. Run again with --target <url>${options.upload ? "" : " and without --no-upload"} to attach them.\n`);
+      return;
+    }
+
+    const uploaded = await uploadAttachments(report.dir, new HttpTarget(base, targetToken()), ledger, {
+      onProgress: (n) => process.stdout.write(`\r  attaching  ${String(n).padStart(8)}`),
+    });
+    process.stdout.write("\n\n");
+    console.log(`  attached     ${String(uploaded.uploaded).padStart(8)}`);
+    console.log(`  already      ${String(uploaded.already).padStart(8)}`);
+    const list = (title: string, rows: { sourceId: string; reason: string }[]) => {
+      if (rows.length === 0) return;
+      console.log(`  ${title.padEnd(12)} ${String(rows.length).padStart(8)}`);
+      for (const r of rows.slice(0, 20)) console.log(`    ${r.sourceId}: ${r.reason}`);
+      if (rows.length > 20) console.log(`    ...and ${rows.length - 20} more`);
+    };
+    list("not loaded", uploaded.notLoaded);
+    list("unattachable", uploaded.unattachable);
+    list("refused", uploaded.failed);
+    if (uploaded.aborted) console.log(pc.red(`\n  STOPPED: ${uploaded.aborted}. Run the same command again to resume.`));
+    if (uploaded.failed.length > 0 || uploaded.aborted) process.exitCode = 1;
+    console.log("");
+  });
+
+program
   .command("reconcile")
   .description("Prove it. Record counts and dollar totals against the source, with a discrepancy report.")
   .option("-i, --in <dir>", "snapshot directory", "./snapshot")
-  .requiredOption("--against <file>", "JSON summary of what the target reports")
+  .option("-t, --target <url>", "read the totals back from this OpenTradesOS")
+  .option("--ledger <file>", "load ledger (default <in>/load/<host>.ledger.ndjson)")
+  .option("--against <file>", "or: a JSON summary of what the target reports")
   .option("--tolerance-cents <n>", "allowed drift, in cents. Default zero, and raising it is a decision", "0")
-  .action(async (options: { in: string; against: string; toleranceCents: string }) => {
-    const snapshot = await Snapshot.read(options.in).catch(() => fail(`No snapshot at ${options.in}.`));
+  .option("--json <file>", "also write the report as JSON")
+  .action(async (options: {
+    in: string; target?: string; ledger?: string; against?: string; toleranceCents: string; json?: string;
+  }) => {
+    if (!options.target === !options.against) fail("Pass exactly one of --target <url> or --against <file>.");
+    const snapshot = await openSnapshot(options.in);
     const adapter = resolve(snapshot.source);
-    const result = await transform(snapshot, adapter, new CountingSink());
+    const expected = sourceSide(await transform(snapshot, adapter, new CountingSink()));
 
-    const expected: Side = {
-      counts: result.counts as Partial<Record<EntityName, number>>,
-      invoiceTotal: result.profile.totals.invoiceTotal,
-      invoiceBalance: result.profile.totals.invoiceBalance,
-      paymentTotal: result.profile.totals.paymentTotal,
-      paymentAllocated: result.profile.totals.paymentAllocated,
-    };
-    const actual = JSON.parse(await readFile(options.against, "utf8")) as Side;
+    let actual: Side;
+    let notes: string[] = [];
+    if (options.target) {
+      const base = apiBase(options.target);
+      const ledger = await Ledger.open(options.ledger ?? defaultLedgerPath(options.in, base), base, snapshot.source, snapshot.info.account ?? "")
+        .catch((error: Error) => fail(error.message));
+      if (ledger.size === 0) fail(`The ledger for ${base} is empty. Nothing has been loaded there from this snapshot.`);
+      const reading = await readTarget(new HttpTarget(base, targetToken()), ledger);
+      actual = reading.side;
+      notes = reading.notes;
+    } else {
+      actual = JSON.parse(await readFile(options.against!, "utf8")) as Side;
+    }
 
     const report = reconcile(expected, actual, Number(options.toleranceCents) || 0);
     console.log("");
     console.log(renderReconcile(report));
+    for (const note of notes) console.log(`\n  ${pc.dim(wrap(note, 2))}`);
     console.log("");
+    await writeJson(options.json, { ...report, notes });
     if (!report.matched) process.exitCode = 1;
   });
 
-for (const [name, description] of [
-  ["map", "Interactively map users, job types, tax codes and custom fields. Saves a reusable mapping."],
-  ["dryrun", "Transform into a scratch tenant and produce a full diff and validation report. Touches nothing real."],
-  ["load", "Write into OpenTradesOS. Batched, resumable, idempotent on source ids."],
-  ["attachments", "Second pass for photos and documents. Slow, rate limited, separately resumable."],
-] as const) {
-  program.command(name).description(`${description} (not implemented yet)`)
-    .allowUnknownOption(true)
-    .action(() => notImplemented(name));
+async function openSnapshot(dir: string): Promise<Snapshot> {
+  return Snapshot.read(dir).catch(() => fail(`No snapshot at ${dir}. Run extract first.`));
+}
+
+function reportMapping(mapping: Mapping): void {
+  const result = check(mapping);
+  const users = Object.keys(mapping.users).length;
+  console.log(`  technicians  ${users - result.unmappedUsers.length} of ${users} mapped to a target technician`);
+  for (const id of result.unmappedUsers.slice(0, 15)) {
+    console.log(`    ${pc.yellow("unmapped")}  ${id}  ${mapping.users[id]?.name ?? ""}`);
+  }
+  if (result.unmappedUsers.length > 15) console.log(`    ...and ${result.unmappedUsers.length - 15} more`);
+  if (result.unmappedJobTypes.length > 0) {
+    console.log(`  job types    ${result.unmappedJobTypes.length} with no target id: ${result.unmappedJobTypes.slice(0, 8).join(", ")}`);
+  }
+  if (result.undecidedJobStatuses.length > 0) {
+    console.log(`  job status   ${pc.yellow("undecided")}: ${result.undecidedJobStatuses.join(", ")}`);
+  }
+  for (const bad of result.invalidTargets) console.log(`  ${pc.red("not valid")}    ${bad}`);
+}
+
+function refuseBadMapping(mapping: Mapping, path: string): void {
+  const { invalidTargets } = check(mapping);
+  if (invalidTargets.length > 0) {
+    fail(`${path} has values the target will not accept:\n    ${invalidTargets.join("\n    ")}`);
+  }
+}
+
+/** One line of progress, redrawn in place, so a long load shows it is alive without scrolling. */
+function progress(): { tick: (entity: string, n: number) => void; finish: () => void } {
+  let entity = "";
+  let count = 0;
+  let drawn = 0;
+  const draw = () => { process.stdout.write(`\r  ${entity.padEnd(16)} ${String(count).padStart(8)}`); drawn = Date.now(); };
+  // Finishing writes the entity's real total, not whichever count was last drawn.
+  const finish = () => { if (entity !== "") { draw(); process.stdout.write("\n"); } entity = ""; };
+  return {
+    tick(current, n) {
+      if (current !== entity) { finish(); entity = current; count = n; draw(); return; }
+      count = n;
+      if (Date.now() - drawn > 100) draw();
+    },
+    finish,
+  };
+}
+
+async function writeJson(path: string | undefined, value: unknown): Promise<void> {
+  if (!path) return;
+  await writeFile(path, JSON.stringify(value, null, 2) + "\n", "utf8");
+  console.log(`  Report written to ${path}`);
 }
 
 function resolve(source: string) {
@@ -208,15 +551,6 @@ function wrap(text: string, indent: number): string {
 
 function fail(message: string): never {
   console.error(`\n  ${pc.red(message)}\n`);
-  process.exit(1);
-}
-
-function notImplemented(cmd: string): never {
-  console.error(pc.yellow(`\n  ${cmd} is not implemented yet.\n`));
-  console.error(`  Working today: ${pc.cyan("sources")}, ${pc.cyan("extract")}, ${pc.cyan("profile")}, ${pc.cyan("reconcile")}.`);
-  console.error(`  Extract and profile are the two that answer "what do I actually have",`);
-  console.error(`  and they run against a real account without writing anything anywhere.\n`);
-  console.error(`  Roadmap and status: ${pc.cyan("https://github.com/habrevaya/open-trades-os-migration")}\n`);
   process.exit(1);
 }
 

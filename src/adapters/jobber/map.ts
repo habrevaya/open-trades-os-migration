@@ -1,7 +1,8 @@
 import * as money from "../../money/index.js";
 import type {
   CanonicalCustomer, CanonicalProperty, CanonicalJob, CanonicalInvoice,
-  CanonicalPayment, CanonicalVisit,
+  CanonicalPayment, CanonicalVisit, CanonicalInvoiceLine, CanonicalUser,
+  CanonicalPriceBookItem, CanonicalEstimate,
 } from "../../canonical/index.js";
 
 /**
@@ -214,18 +215,9 @@ const intOrUndefined = (v: unknown): number | undefined => {
   return typeof n === "number" && Number.isInteger(n) ? n : undefined;
 };
 
-/**
- * Invoice totals are taken as the source printed them and never recomputed.
- *
- * It is tempting to derive the subtotal from the lines, and it is wrong. A
- * five-year-old invoice carries the tax rate that applied then, a discount
- * that may no longer exist, and occasionally an adjustment made by hand.
- * Recomputing produces a number that is arithmetically defensible and does not
- * match what the customer paid, which is the only number that matters.
- */
-export function toInvoice(raw: Record<string, unknown>): CanonicalInvoice {
-  const amounts = record(raw["amounts"]);
-  const lines = nodes(raw["lineItems"]).map(record).map((li) => {
+/** Line items, shared by invoices and quotes so the two cannot drift apart. */
+function lineItems(connection: unknown): CanonicalInvoiceLine[] {
+  return nodes(connection).map(record).map((li) => {
     const quantity = money.normalize(li["quantity"] ?? 1);
     const unitPrice = amount(li["unitPrice"] ?? li["unitCost"]);
     return {
@@ -240,6 +232,20 @@ export function toInvoice(raw: Record<string, unknown>): CanonicalInvoice {
       priceBookItemSourceId: text(record(li["linkedProductOrService"])["id"]),
     };
   });
+}
+
+/**
+ * Invoice totals are taken as the source printed them and never recomputed.
+ *
+ * It is tempting to derive the subtotal from the lines, and it is wrong. A
+ * five-year-old invoice carries the tax rate that applied then, a discount
+ * that may no longer exist, and occasionally an adjustment made by hand.
+ * Recomputing produces a number that is arithmetically defensible and does not
+ * match what the customer paid, which is the only number that matters.
+ */
+export function toInvoice(raw: Record<string, unknown>): CanonicalInvoice {
+  const amounts = record(raw["amounts"]);
+  const lines = lineItems(raw["lineItems"]);
 
   return {
     sourceSystem: SOURCE,
@@ -292,5 +298,77 @@ export function toPayment(raw: Record<string, unknown>): CanonicalPayment {
     amount: total,
     receivedAt: text(raw["entryDate"]) ?? text(raw["createdAt"]) ?? "",
     allocations,
+  };
+}
+
+/**
+ * Users carry a name and contact details and nothing else that matters here.
+ * Jobber's `status` distinguishes an active seat from a deactivated one, and
+ * a deactivated user still appears on years of visits, so they are kept.
+ */
+export function toUser(raw: Record<string, unknown>): CanonicalUser {
+  const name = record(raw["name"]);
+  const full = text(name["full"]) ?? [text(name["first"]), text(name["last"])].filter(Boolean).join(" ");
+  const status = (text(raw["status"]) ?? "").toLowerCase();
+  return {
+    sourceSystem: SOURCE,
+    sourceId: String(raw["id"] ?? ""),
+    sourcePayload: raw,
+    name: full || "Unnamed user",
+    email: text(record(raw["email"])["raw"]) ?? text(raw["email"]),
+    phone: text(record(raw["phone"])["raw"]) ?? text(raw["phone"]),
+    active: status === "" || status === "active",
+    role: raw["isAccountAdmin"] === true ? "admin" : undefined,
+  };
+}
+
+/**
+ * Products and services.
+ *
+ * `defaultUnitCost` is, despite its name, the price Jobber puts on a line by
+ * default: it is what the customer is charged. `internalUnitCost` is what the
+ * contractor pays. Inferred from Jobber's schema documentation rather than
+ * observed in a real export, so check it against one before trusting margins.
+ */
+export function toPriceBookItem(raw: Record<string, unknown>): CanonicalPriceBookItem {
+  const category = (text(raw["category"]) ?? "").toLowerCase();
+  const duration = raw["durationMinutes"];
+  return {
+    sourceSystem: SOURCE,
+    sourceId: String(raw["id"] ?? ""),
+    sourcePayload: raw,
+    kind: category.includes("product") ? "material" : "service",
+    name: text(raw["name"]) ?? "Unnamed item",
+    description: text(raw["description"]),
+    price: amount(raw["defaultUnitCost"]),
+    cost: raw["internalUnitCost"] === undefined || raw["internalUnitCost"] === null ? undefined : amount(raw["internalUnitCost"]),
+    taxable: raw["taxable"] !== false,
+    durationMinutes: typeof duration === "number" && Number.isInteger(duration) ? duration : undefined,
+    active: true,
+  };
+}
+
+/**
+ * Quotes. Jobber has one scope per quote, so each becomes one option. The
+ * status is kept as Jobber's own word and translated during load, where the
+ * mapping file can see it.
+ */
+export function toEstimate(raw: Record<string, unknown>): CanonicalEstimate {
+  const amounts = record(raw["amounts"]);
+  const title = text(raw["title"]);
+  return {
+    sourceSystem: SOURCE,
+    sourceId: String(raw["id"] ?? ""),
+    sourcePayload: raw,
+    customerSourceId: String(record(raw["client"])["id"] ?? ""),
+    propertySourceId: text(record(raw["property"])["id"]),
+    number: intOrUndefined(raw["quoteNumber"]),
+    status: text(raw["quoteStatus"]) ?? "unknown",
+    title,
+    issuedOn: text(raw["createdAt"]),
+    subtotal: amount(amounts["subtotal"]),
+    taxTotal: amount(amounts["taxAmount"]),
+    total: amount(amounts["total"]),
+    options: [{ name: title ?? "Quote", isRecommended: true, lines: lineItems(raw["lineItems"]) }],
   };
 }

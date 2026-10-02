@@ -1,0 +1,3 @@
+Customer,Address,Equip. Name,Manufacturer,Model,Serial #,Equip. Type,Install,Parts Warranty,Labor Warranty,Replace Date,Primary Email,Primary Phone,Address 1,Address 2,City,State,Zip
+"Whitfield, Dana","4102 Ramsey Ave, Austin, TX 78756",Attic furnace,Carrier,59SC5A060E17,2419A12345,Furnace,4/2/2019,4/2/2029,4/2/2020,,dana.w@example.com,(512) 555-0192,4102 Ramsey Ave,,Austin,TX,78756
+"Whitfield, Dana","4102 Ramsey Ave, Austin, TX 78756",Condenser,Carrier,24ACC636A003,3019E54321,Air Conditioner,4/2/2019,10 years,1 year,4/2/2034,dana.w@example.com,(512) 555-0192,4102 Ramsey Ave,,Austin,TX,78756

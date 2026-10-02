@@ -1,0 +1,4 @@
+id,job_id,start,end,completed_at,status,technician_ids,notes
+V-2,J-1,2023-09-20T14:00:00Z,2023-09-20T16:00:00Z,2023-09-20T15:12:00Z,completed,u-2,Replaced capacitor
+V-1,J-1,2023-03-14T14:00:00Z,2023-03-14T16:00:00Z,2023-03-14T15:41:00Z,completed,u-1,
+V-3,J-2,2025-02-03T16:00:00Z,2025-02-03T17:00:00Z,,scheduled,,

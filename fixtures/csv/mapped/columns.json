@@ -1,0 +1,22 @@
+{
+  "delimiter": ";",
+  "cents": true,
+  "dateOrder": "DMY",
+  "files": {
+    "customers": {
+      "file": "Customer List.csv",
+      "columns": { "id": "Customer #", "name": "Customer Name", "email": "E-mail" }
+    },
+    "properties": {
+      "file": "Customer List.csv",
+      "columns": {
+        "id": "Customer #", "customer_id": "Customer #",
+        "line1": "Service Street", "city": "Service City", "state": "St", "postal_code": "Zip"
+      }
+    },
+    "invoices": {
+      "file": "Open Invoices.csv",
+      "columns": { "id": "Inv No", "customer_id": "Customer #", "issued_on": "Date", "total": "Amount", "balance": "Open" }
+    }
+  }
+}

@@ -1,0 +1,4 @@
+﻿id,name,type,email,phone,billing_line1,billing_line2,billing_city,billing_state,billing_postal_code,lead_source,tax_exempt,notes,tags,custom:Gate code
+C-100,Dana Whitfield,residential,dana.w@example.com,512-555-0192,4102 Ramsey Ave,,Austin,TX,78756,Referral,no,Prefers mornings,maintenance plan;VIP,#4417
+C-200,Brazos Property Group,commercial,ap@brazospg.example.com,,900 Congress Ave,Suite 400,Austin,TX,78701,,yes,,,
+C-300,"Ortega, Luis",residential,not-an-email,,,,,,,,maybe,,,

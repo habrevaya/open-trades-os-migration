@@ -1,0 +1,4 @@
+id,customer_id,nickname,line1,line2,city,state,postal_code,access_notes
+P-1,C-100,Home,4102 Ramsey Ave,,Austin,TX,78756,Dogs in back yard
+P-2,C-200;C-100,Suite 400,900 Congress Ave,Suite 400,Austin,TX,78701,
+P-3,C-200,North warehouse,11200 Metric Blvd,,Austin,TX,78758,

@@ -1,0 +1,28 @@
+[
+  {
+    "id": "Z2lkOi8vSm9iYmVyL1F1b3RlLzMx",
+    "quoteNumber": 311,
+    "title": "Replace condenser",
+    "quoteStatus": "approved",
+    "createdAt": "2024-05-01T15:00:00Z",
+    "client": { "id": "Z2lkOi8vSm9iYmVyL0NsaWVudC8x" },
+    "property": { "id": "Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzEx" },
+    "amounts": { "subtotal": 6200.0, "taxAmount": 511.5, "discountAmount": 0.0, "total": 6711.5, "depositAmount": 0.0 },
+    "lineItems": { "pageInfo": { "hasNextPage": false }, "nodes": [
+      { "id": "qli-1", "name": "3 ton condenser, installed", "quantity": 1, "unitPrice": 6200.0, "totalPrice": 6200.0, "taxable": true }
+    ] }
+  },
+  {
+    "id": "Z2lkOi8vSm9iYmVyL1F1b3RlLzMy",
+    "quoteNumber": 312,
+    "title": "Duct cleaning",
+    "quoteStatus": "rejected",
+    "createdAt": "2024-06-01T15:00:00Z",
+    "client": { "id": "Z2lkOi8vSm9iYmVyL0NsaWVudC8y" },
+    "property": { "id": "Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzEy" },
+    "amounts": { "subtotal": 450.0, "taxAmount": 0.0, "total": 450.0 },
+    "lineItems": { "pageInfo": { "hasNextPage": false }, "nodes": [
+      { "id": "qli-2", "name": "Duct cleaning", "quantity": 1, "unitPrice": 500.0, "totalPrice": 450.0, "taxable": false }
+    ] }
+  }
+]

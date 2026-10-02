@@ -1,5 +1,6 @@
 import * as money from "../money/index.js";
 import type { EntityName } from "../canonical/index.js";
+import type { TransformResult } from "../transform/index.js";
 
 /**
  * RECONCILE
@@ -104,4 +105,27 @@ export function renderReconcile(report: ReconcileReport): string {
     for (const c of report.checked) out.push(`    ok  ${c}`);
   }
   return out.join("\n");
+}
+
+/**
+ * What the source says should be in the target, from a transform of the
+ * snapshot. Only the entities the loader creates are counted: users are
+ * mapped to people who already exist rather than made, and attachments go
+ * through their own pass, so expecting either to appear would be a
+ * discrepancy by construction.
+ */
+export function sourceSide(result: TransformResult): Side {
+  const loaded: EntityName[] = ["customer", "property", "priceBookItem", "job", "recurringSchedule", "estimate", "invoice", "payment"];
+  const counts: Partial<Record<EntityName, number>> = {};
+  for (const entity of loaded) {
+    const n = result.counts[entity];
+    if (n !== undefined) counts[entity] = n;
+  }
+  return {
+    counts,
+    invoiceTotal: result.profile.totals.invoiceTotal,
+    invoiceBalance: result.profile.totals.invoiceBalance,
+    paymentTotal: result.profile.totals.paymentTotal,
+    paymentAllocated: result.profile.totals.paymentAllocated,
+  };
 }

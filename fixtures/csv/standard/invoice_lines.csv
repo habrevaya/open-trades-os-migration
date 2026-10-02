@@ -1,0 +1,5 @@
+invoice_id,name,description,quantity,unit_price,taxable,line_total,price_book_item_id
+I-1,Maintenance visit,Two system tune up,2,129.00,yes,258.00,PB-1
+I-1,"Filter, 16x25x1",,4,15.00,yes,60.00,PB-2
+I-2,"Water heater, 50 gal",,1,1890.50,yes,1890.50,
+I-2,Install labor,,1,590.00,no,590.00,
