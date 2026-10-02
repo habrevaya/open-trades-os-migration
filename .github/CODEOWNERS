@@ -1,0 +1,4 @@
+# Every pull request asks the maintainer for a review automatically. With
+# "Require review from Code Owners" turned on in the branch rules for develop
+# and main, nothing merges without that review.
+*       @habrevaya

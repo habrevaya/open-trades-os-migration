@@ -1,0 +1,14 @@
+name: New source or feature
+description: A platform to read from, or something the toolkit should carry that it does not
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: input
+    attributes:
+      label: Platform or area
+      placeholder: "Kickserv, mHelpDesk, equipment warranties..."
+    validations: { required: true }
+  - type: textarea
+    attributes:
+      label: What you need moved, and how you can get it out today
+      description: API, CSV export, report download. Only routes the account owner can use for their own data are in scope.
+    validations: { required: true }
