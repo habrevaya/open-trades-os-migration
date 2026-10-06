@@ -249,7 +249,7 @@ ServiceM8 is the same, by its own CSV exports. See
 
 If you have exported data out of any of these platforms, you know something we
 do not. Open an issue and tell us what broke. That is worth more than code
-right now.
+right now. [CONTRIBUTING.md](CONTRIBUTING.md) says how a change gets in.
 
 ## License
 

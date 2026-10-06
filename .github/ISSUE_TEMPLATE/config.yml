@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/habrevaya/open-trades-os-migration/security/advisories/new
+    about: Report it privately here, never in a public issue. See SECURITY.md.
+  - name: Question or idea to talk through
+    url: https://github.com/habrevaya/open-trades-os/discussions
+    about: Discussions for the whole project live on the main repository.

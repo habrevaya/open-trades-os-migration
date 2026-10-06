@@ -1,0 +1,32 @@
+name: An export or migration went wrong
+description: Something broke or went missing moving data off a platform
+labels: ["migration-report", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most useful thing you can tell us. **Never paste real
+        customer data, credentials or tokens.** Describe the shape: column
+        names, counts, a made-up example row.
+  - type: dropdown
+    attributes:
+      label: Source
+      options: [Jobber, Housecall Pro, ServiceTitan, Workiz, ServiceM8, FieldEdge, Generic CSV, Other]
+    validations: { required: true }
+  - type: dropdown
+    attributes:
+      label: Which step
+      options: [extract, profile, map, dryrun, load, attachments, reconcile, Not sure]
+    validations: { required: true }
+  - type: textarea
+    attributes:
+      label: What happened
+      description: What you expected, what happened, and the error message if there was one.
+    validations: { required: true }
+  - type: textarea
+    attributes:
+      label: What the data looked like
+      description: Column headers, record counts, an invented example. Nothing real.
+  - type: input
+    attributes:
+      label: Toolkit version or commit
